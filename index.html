@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle de Processos SEI — CBMMG</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <h1>Controle de Processos SEI</h1>
+            <span class="header-badge">CBMMG</span>
+        </div>
+        <div class="header-right">
+            <button id="btn-bookmarklet-info" class="btn btn-outline" title="Como importar do SEI">
+                &#128279; Importar do SEI
+            </button>
+            <button id="btn-export" class="btn btn-outline" title="Exportar dados">
+                &#128190; Exportar
+            </button>
+            <button id="btn-import-file" class="btn btn-outline" title="Importar arquivo JSON">
+                &#128194; Importar
+            </button>
+            <input type="file" id="file-import" accept=".json" style="display:none">
+        </div>
+    </header>
+
+    <main class="main">
+        <!-- Painel de Filtros e Resumo -->
+        <section class="dashboard">
+            <div class="stats-cards" id="stats-cards"></div>
+            <div class="filters-bar">
+                <input type="text" id="search-input" class="input-search" placeholder="Buscar por nº processo, interessado, assunto...">
+                <select id="filter-status" class="input-select">
+                    <option value="">Todos os Status</option>
+                    <option value="pendente">Pendente</option>
+                    <option value="em_andamento">Em Andamento</option>
+                    <option value="aguardando">Aguardando Retorno</option>
+                    <option value="concluido">Concluído</option>
+                    <option value="arquivado">Arquivado</option>
+                </select>
+                <select id="filter-prioridade" class="input-select">
+                    <option value="">Todas as Prioridades</option>
+                    <option value="urgente">Urgente</option>
+                    <option value="alta">Alta</option>
+                    <option value="normal">Normal</option>
+                    <option value="baixa">Baixa</option>
+                </select>
+                <select id="filter-marcador" class="input-select" id="filter-marcador">
+                    <option value="">Todos os Marcadores</option>
+                </select>
+                <button id="btn-add" class="btn btn-primary">+ Novo Processo</button>
+            </div>
+        </section>
+
+        <!-- Tabela de Processos -->
+        <section class="table-section">
+            <table class="process-table" id="process-table">
+                <thead>
+                    <tr>
+                        <th data-sort="numero">Nº Processo <span class="sort-icon"></span></th>
+                        <th data-sort="tipo">Tipo <span class="sort-icon"></span></th>
+                        <th data-sort="interessado">Interessado <span class="sort-icon"></span></th>
+                        <th data-sort="marcador">Marcador <span class="sort-icon"></span></th>
+                        <th data-sort="status">Status <span class="sort-icon"></span></th>
+                        <th data-sort="prioridade">Prioridade <span class="sort-icon"></span></th>
+                        <th data-sort="prazo">Prazo <span class="sort-icon"></span></th>
+                        <th data-sort="cpf_atribuido">CPF Atribuído <span class="sort-icon"></span></th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+            </table>
+            <div class="empty-state" id="empty-state" style="display:none">
+                <p>Nenhum processo encontrado.</p>
+                <p>Clique em <strong>+ Novo Processo</strong> ou use o <strong>bookmarklet</strong> para importar do SEI.</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modal de Cadastro/Edição -->
+    <div class="modal-overlay" id="modal-overlay" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="modal-title">Novo Processo</h2>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <form id="process-form" class="modal-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="f-numero">Nº Processo SEI *</label>
+                        <input type="text" id="f-numero" required placeholder="00000.000000/0000-00">
+                    </div>
+                    <div class="form-group">
+                        <label for="f-tipo">Tipo de Documento</label>
+                        <input type="text" id="f-tipo" placeholder="Ofício, Memorando, Requerimento...">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="f-interessado">Interessado</label>
+                        <input type="text" id="f-interessado" placeholder="Nome do interessado">
+                    </div>
+                    <div class="form-group">
+                        <label for="f-assunto">Assunto</label>
+                        <input type="text" id="f-assunto" placeholder="Assunto do processo">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="f-cpf">CPF Atribuído</label>
+                        <input type="text" id="f-cpf" placeholder="000.000.000-00">
+                    </div>
+                    <div class="form-group">
+                        <label for="f-unidade">Unidade/Seção</label>
+                        <input type="text" id="f-unidade" placeholder="Seção de origem">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="f-marcador">Marcador</label>
+                        <input type="text" id="f-marcador" list="marcadores-list" placeholder="Ex: Recurso, Licença, Sindicância...">
+                        <datalist id="marcadores-list"></datalist>
+                    </div>
+                    <div class="form-group">
+                        <label for="f-prioridade">Prioridade</label>
+                        <select id="f-prioridade">
+                            <option value="normal">Normal</option>
+                            <option value="baixa">Baixa</option>
+                            <option value="alta">Alta</option>
+                            <option value="urgente">Urgente</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="f-status">Status</label>
+                        <select id="f-status">
+                            <option value="pendente">Pendente</option>
+                            <option value="em_andamento">Em Andamento</option>
+                            <option value="aguardando">Aguardando Retorno</option>
+                            <option value="concluido">Concluído</option>
+                            <option value="arquivado">Arquivado</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="f-prazo">Prazo</label>
+                        <input type="date" id="f-prazo">
+                    </div>
+                </div>
+                <div class="form-group full-width">
+                    <label for="f-anotacoes">Anotações / Andamento</label>
+                    <textarea id="f-anotacoes" rows="4" placeholder="Registre aqui anotações, andamentos e despachos..."></textarea>
+                </div>
+                <div class="form-group full-width">
+                    <label for="f-observacoes">Observações</label>
+                    <textarea id="f-observacoes" rows="2" placeholder="Observações adicionais..."></textarea>
+                </div>
+                <input type="hidden" id="f-id">
+                <div class="form-actions">
+                    <button type="button" class="btn btn-outline" id="btn-cancel">Cancelar</button>
+                    <button type="submit" class="btn btn-primary" id="btn-save">Salvar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal Detalhes do Processo -->
+    <div class="modal-overlay" id="detail-overlay" style="display:none">
+        <div class="modal modal-detail">
+            <div class="modal-header">
+                <h2 id="detail-title">Detalhes do Processo</h2>
+                <button class="modal-close" id="detail-close">&times;</button>
+            </div>
+            <div class="detail-content" id="detail-content"></div>
+            <div class="detail-history" id="detail-history">
+                <h3>Histórico de Andamentos</h3>
+                <div id="history-list"></div>
+                <div class="add-history">
+                    <textarea id="new-history-entry" rows="2" placeholder="Adicionar novo andamento..."></textarea>
+                    <button class="btn btn-primary btn-sm" id="btn-add-history">Adicionar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Bookmarklet -->
+    <div class="modal-overlay" id="bookmarklet-overlay" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Importar Processos do SEI</h2>
+                <button class="modal-close" id="bookmarklet-close">&times;</button>
+            </div>
+            <div class="bookmarklet-content">
+                <h3>Método 1: Bookmarklet (Recomendado)</h3>
+                <p>Arraste o botão abaixo para sua barra de favoritos:</p>
+                <p class="bookmarklet-drag">
+                    <a id="bookmarklet-link" class="bookmarklet-btn" href="#">&#128279; Capturar SEI</a>
+                </p>
+                <ol>
+                    <li>Arraste o botão acima para a barra de favoritos do navegador</li>
+                    <li>Acesse o SEI e abra a lista de processos ou um processo específico</li>
+                    <li>Clique no favorito "Capturar SEI"</li>
+                    <li>Os dados serão copiados — cole aqui no campo abaixo</li>
+                </ol>
+
+                <h3>Método 2: Colar dados manualmente</h3>
+                <p>Copie os dados da tela do SEI e cole abaixo (o sistema tentará interpretar automaticamente):</p>
+                <textarea id="paste-sei-data" rows="6" placeholder="Cole aqui os dados copiados do SEI ou do bookmarklet..."></textarea>
+                <button class="btn btn-primary" id="btn-parse-paste" style="margin-top:8px">Processar Dados</button>
+                <div id="parse-result" style="margin-top:8px"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
