@@ -644,8 +644,197 @@ function processPastedData() {
 }
 
 // ============================================================
-// (Bookmarklet removed — import is now paste-based)
+// PDF Import
 // ============================================================
+
+let pdfParsedProcessos = [];
+
+async function extractTextFromPDF(file) {
+    const statusEl = $('#pdf-status');
+    const statusText = $('#pdf-status-text');
+    const progressBar = $('#pdf-progress-bar');
+    const previewEl = $('#pdf-preview');
+    const rawTextEl = $('#pdf-raw-text');
+
+    // Reset UI
+    statusEl.style.display = 'block';
+    previewEl.style.display = 'none';
+    rawTextEl.style.display = 'none';
+    progressBar.style.width = '10%';
+    statusText.textContent = 'Lendo PDF...';
+
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        progressBar.style.width = '30%';
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const totalPages = pdf.numPages;
+        let fullText = '';
+
+        for (let i = 1; i <= totalPages; i++) {
+            statusText.textContent = `Lendo página ${i} de ${totalPages}...`;
+            progressBar.style.width = `${30 + (60 * i / totalPages)}%`;
+
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const pageText = content.items.map(item => item.str).join(' ');
+            fullText += pageText + '\n';
+        }
+
+        progressBar.style.width = '95%';
+        statusText.textContent = 'Analisando dados...';
+
+        // Parse the extracted text
+        const parsed = parseSEIPdfText(fullText);
+        pdfParsedProcessos = parsed;
+
+        progressBar.style.width = '100%';
+
+        if (parsed.length > 0) {
+            statusText.textContent = `${parsed.length} processo(s) encontrado(s)!`;
+            renderPdfPreview(parsed);
+            previewEl.style.display = 'block';
+        } else {
+            statusText.textContent = 'Nenhum processo encontrado automaticamente.';
+            $('#pdf-extracted-text').value = fullText.trim();
+            rawTextEl.style.display = 'block';
+        }
+
+    } catch (err) {
+        statusText.textContent = 'Erro ao ler PDF: ' + err.message;
+        progressBar.style.width = '100%';
+        progressBar.style.background = 'var(--danger)';
+    }
+}
+
+function parseSEIPdfText(text) {
+    const results = [];
+    const seen = new Set();
+
+    // SEI process number patterns
+    const seiPatternFull = /\d{4,6}\.\d{4,8}\/\d{4}-\d{2}/g;
+
+    // Find all process numbers
+    const matches = text.match(seiPatternFull) || [];
+
+    for (const num of matches) {
+        if (seen.has(num)) continue;
+        seen.add(num);
+
+        const processo = {
+            numero: num,
+            tipo: '',
+            interessado: '',
+            assunto: '',
+            marcador: '',
+            status: 'pendente',
+            prioridade: 'normal'
+        };
+
+        // Try to extract context around the process number
+        const idx = text.indexOf(num);
+        const context = text.substring(Math.max(0, idx - 200), Math.min(text.length, idx + 300));
+
+        // Try to find tipo de documento
+        const tipoMatch = context.match(/(?:Tipo|Documento|Espécie)[:\s]*([\w\sÀ-ú]+?)(?:\n|Interessad|Assunto|Unidade|\d{4,})/i);
+        if (tipoMatch) processo.tipo = tipoMatch[1].trim();
+
+        // Try to find interessado
+        const intMatch = context.match(/(?:Interessado|Requerente|Solicitante)[:\s]*([\w\sÀ-ú.,'-]+?)(?:\n|Assunto|Tipo|Unidade|\d{4,}\.|Observ)/i);
+        if (intMatch) processo.interessado = intMatch[1].trim();
+
+        // Try to find assunto
+        const assMatch = context.match(/(?:Assunto|Descrição|Objeto)[:\s]*([\w\sÀ-ú.,;:'-]+?)(?:\n|Interessad|Tipo|Unidade|\d{4,}\.|Observ)/i);
+        if (assMatch) processo.assunto = assMatch[1].trim();
+
+        // Try to find unidade
+        const unidMatch = context.match(/(?:Unidade|Seção|Setor|Órgão)[:\s]*([\w\sÀ-ú./-]+?)(?:\n|Interessad|Assunto|Tipo|\d{4,}\.)/i);
+        if (unidMatch) processo.unidade = unidMatch[1].trim();
+
+        results.push(processo);
+    }
+
+    return results;
+}
+
+function renderPdfPreview(parsed) {
+    const list = $('#pdf-preview-list');
+    const existingNums = new Set(processos.map(p => p.numero));
+
+    list.innerHTML = parsed.map((p, i) => {
+        const exists = existingNums.has(p.numero);
+        const details = [p.tipo, p.interessado, p.assunto].filter(Boolean).join(' — ');
+        return `
+            <div class="pdf-preview-item">
+                <input type="checkbox" id="pdf-check-${i}" ${exists ? '' : 'checked'}>
+                <span class="pdf-preview-num">${escapeHtml(p.numero)}</span>
+                <span class="pdf-preview-detail">${details ? escapeHtml(details) : 'Sem detalhes extras'}</span>
+                ${exists ? '<span class="pdf-preview-exists">Já existe</span>' : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+function importFromPdf() {
+    const resultEl = $('#pdf-import-result');
+    let added = 0;
+
+    pdfParsedProcessos.forEach((item, i) => {
+        const checkbox = $(`#pdf-check-${i}`);
+        if (!checkbox || !checkbox.checked) return;
+        if (!item.numero) return;
+
+        const exists = processos.find(p => p.numero === item.numero);
+        if (exists) return;
+
+        processos.push({
+            id: generateId(),
+            numero: item.numero,
+            tipo: item.tipo || '',
+            interessado: item.interessado || '',
+            assunto: item.assunto || '',
+            cpf_atribuido: item.cpf_atribuido || '',
+            unidade: item.unidade || '',
+            marcador: item.marcador || '',
+            prioridade: item.prioridade || 'normal',
+            status: item.status || 'pendente',
+            prazo: item.prazo || null,
+            anotacoes: item.anotacoes || '',
+            observacoes: item.observacoes || '',
+            historico: [{ data: now(), texto: 'Importado via PDF do SEI' }],
+            created_at: now(),
+            updated_at: now()
+        });
+        added++;
+    });
+
+    saveProcessos(processos);
+    render();
+
+    resultEl.textContent = `${added} processo(s) importado(s)!`;
+    resultEl.className = 'success';
+
+    if (added > 0) {
+        setTimeout(() => {
+            bookmarkletOverlay.style.display = 'none';
+            resetPdfImport();
+        }, 1500);
+    }
+}
+
+function resetPdfImport() {
+    $('#pdf-status').style.display = 'none';
+    $('#pdf-preview').style.display = 'none';
+    $('#pdf-raw-text').style.display = 'none';
+    $('#pdf-progress-bar').style.width = '0%';
+    $('#pdf-progress-bar').style.background = 'var(--primary)';
+    $('#pdf-import-result').textContent = '';
+    $('#pdf-file-input').value = '';
+    pdfParsedProcessos = [];
+}
 
 // ============================================================
 // Event Handlers
@@ -661,14 +850,54 @@ function init() {
         e.target.value = '';
     });
 
-    // Bookmarklet modal
+    // Import modal
     $('#btn-bookmarklet-info').addEventListener('click', () => {
         bookmarkletOverlay.style.display = 'flex';
     });
     $('#bookmarklet-close').addEventListener('click', () => {
         bookmarkletOverlay.style.display = 'none';
+        resetPdfImport();
     });
     $('#btn-parse-paste').addEventListener('click', processPastedData);
+
+    // Import tabs
+    $$('.import-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            $$('.import-tab').forEach(t => t.classList.remove('active'));
+            $$('.import-tab-content').forEach(c => c.classList.remove('active'));
+            tab.classList.add('active');
+            $(`#tab-${tab.dataset.tab}`).classList.add('active');
+        });
+    });
+
+    // PDF upload
+    const dropZone = $('#pdf-drop-zone');
+    const pdfInput = $('#pdf-file-input');
+
+    dropZone.addEventListener('click', () => pdfInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        const file = e.dataTransfer.files[0];
+        if (file && file.type === 'application/pdf') {
+            extractTextFromPDF(file);
+        }
+    });
+
+    pdfInput.addEventListener('change', (e) => {
+        if (e.target.files[0]) extractTextFromPDF(e.target.files[0]);
+    });
+
+    $('#btn-import-pdf').addEventListener('click', importFromPdf);
+    $('#btn-pdf-cancel').addEventListener('click', resetPdfImport);
 
     // Modal
     $('#modal-close').addEventListener('click', closeModal);
