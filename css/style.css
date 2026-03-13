@@ -447,42 +447,79 @@ body {
 
 .bookmarklet-content ol {
     padding-left: 20px;
-    margin: 8px 0;
+    margin: 8px 0 16px;
     font-size: 0.9rem;
     color: var(--text-secondary);
 }
 
 .bookmarklet-content ol li { margin-bottom: 6px; }
 
-.bookmarklet-drag { text-align: center; padding: 12px; }
-
-.bookmarklet-btn {
-    display: inline-block;
-    padding: 10px 24px;
-    background: var(--primary);
-    color: white;
-    border-radius: var(--radius);
-    text-decoration: none;
-    font-weight: 600;
-    font-size: 0.9rem;
-    cursor: grab;
+.import-tip {
+    background: var(--info-light);
+    color: #1a5276;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    margin-bottom: 12px;
 }
 
 .bookmarklet-content textarea {
     width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    padding: 12px;
+    border: 2px dashed var(--border);
+    border-radius: 8px;
     font-family: monospace;
     font-size: 0.85rem;
     resize: vertical;
     outline: none;
+    background: #fafafa;
+    transition: border-color 0.2s;
 }
 
-.bookmarklet-content textarea:focus { border-color: var(--primary); }
+.bookmarklet-content textarea:focus {
+    border-color: var(--primary);
+    border-style: solid;
+    background: white;
+}
+
+.import-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.import-example {
+    margin-top: 20px;
+    padding: 14px;
+    background: var(--bg);
+    border-radius: 8px;
+}
+
+.import-example h4 {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.import-example pre {
+    background: white;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+
+.import-example p {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin: 8px 0;
+}
 
 #parse-result { font-size: 0.85rem; }
-#parse-result.success { color: var(--success); }
+#parse-result.success { color: var(--success); font-weight: 600; }
 #parse-result.error { color: var(--danger); }
 
 /* === Responsive === */

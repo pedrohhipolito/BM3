@@ -529,7 +529,7 @@ function importData(file) {
 function parseSEIData(text) {
     const results = [];
 
-    // Try JSON format first (from bookmarklet)
+    // Try JSON format first
     try {
         const json = JSON.parse(text);
         if (Array.isArray(json)) return json;
@@ -538,16 +538,26 @@ function parseSEIData(text) {
         // Not JSON, try text parsing
     }
 
-    // Try to parse tabular data (tab or pipe separated)
     const lines = text.trim().split('\n').filter(l => l.trim());
 
-    // Detect SEI process number pattern: 00000.000000/0000-00 or similar
-    const seiPattern = /\d{5,}\.\d{5,}\/\d{4}-\d{2}/;
+    // SEI process number patterns:
+    // Full: 00000.000000/0000-00
+    // Short: 0000000 (7+ digits)
+    // With dots: 00090.000123/2024-01
+    const seiPatternFull = /\d{4,6}\.\d{4,8}\/\d{4}-\d{2}/;
+    const seiPatternShort = /\b\d{7,17}\b/;
 
     for (const line of lines) {
-        const match = line.match(seiPattern);
+        // Try full pattern first
+        let match = line.match(seiPatternFull);
+        if (!match) {
+            // Try short numeric pattern (only if line looks like process data)
+            match = line.match(seiPatternShort);
+        }
+
         if (match) {
-            const parts = line.split(/\t|\|/).map(s => s.trim());
+            // Split by tab, multiple spaces, or pipe
+            const parts = line.split(/\t|  +|\|/).map(s => s.trim()).filter(Boolean);
             const processo = {
                 numero: match[0],
                 tipo: '',
@@ -558,24 +568,19 @@ function parseSEIData(text) {
                 prioridade: 'normal'
             };
 
-            // Try to extract more data from surrounding text
-            const remaining = line.replace(match[0], '').trim();
-            if (remaining) {
-                processo.assunto = remaining.replace(/^\s*[-|]\s*/, '').trim();
-            }
+            // Find which part has the number and extract others in order
+            const numIdx = parts.findIndex(p => p.includes(match[0]));
+            const afterNum = parts.slice(numIdx + 1);
 
-            // If tab-separated with multiple columns
-            if (parts.length > 1) {
-                const numIdx = parts.findIndex(p => seiPattern.test(p));
-                if (numIdx >= 0 && parts[numIdx + 1]) {
-                    processo.tipo = parts[numIdx + 1] || '';
-                }
-                if (parts[numIdx + 2]) {
-                    processo.interessado = parts[numIdx + 2] || '';
-                }
-                if (parts[numIdx + 3]) {
-                    processo.assunto = parts[numIdx + 3] || '';
-                }
+            if (afterNum.length >= 1) processo.tipo = afterNum[0];
+            if (afterNum.length >= 2) processo.interessado = afterNum[1];
+            if (afterNum.length >= 3) processo.assunto = afterNum[2];
+            if (afterNum.length >= 4) processo.marcador = afterNum[3];
+
+            // If no tab-separated data, put everything after number as assunto
+            if (afterNum.length === 0) {
+                const remaining = line.replace(match[0], '').trim().replace(/^[-|:]\s*/, '');
+                if (remaining) processo.assunto = remaining;
             }
 
             results.push(processo);
@@ -639,84 +644,14 @@ function processPastedData() {
 }
 
 // ============================================================
-// Bookmarklet Generator
+// (Bookmarklet removed — import is now paste-based)
 // ============================================================
-
-function generateBookmarklet() {
-    // This bookmarklet extracts process data from the SEI interface
-    const code = `
-(function(){
-    var processos=[];
-    /* Try to extract from process list page (controle de processos) */
-    var rows=document.querySelectorAll('tr.infraTrClara, tr.infraTrEscura, tr[class*="processo"]');
-    if(rows.length>0){
-        rows.forEach(function(row){
-            var cells=row.querySelectorAll('td');
-            if(cells.length>=2){
-                var numEl=row.querySelector('a[href*="processo"]')||cells[0];
-                var num=numEl?numEl.textContent.trim():'';
-                if(/\\d{5,}/.test(num)){
-                    var p={numero:num};
-                    if(cells[1])p.tipo=cells[1].textContent.trim();
-                    if(cells[2])p.interessado=cells[2].textContent.trim();
-                    /* Try to get marcador */
-                    var marcadorEl=row.querySelector('[id*="marcador"], .marcador, img[title]');
-                    if(marcadorEl)p.marcador=marcadorEl.title||marcadorEl.textContent.trim();
-                    /* Try to get anotacao */
-                    var anotEl=row.querySelector('[id*="anotacao"], .anotacao');
-                    if(anotEl)p.anotacoes=anotEl.title||anotEl.textContent.trim();
-                    processos.push(p);
-                }
-            }
-        });
-    }
-    /* Try to extract from single process view */
-    if(processos.length===0){
-        var numProc=document.querySelector('#txtNumProcesso, .processoVisualizado, [id*="Processo"]');
-        if(numProc){
-            var p={numero:numProc.textContent.trim()};
-            var tipoEl=document.querySelector('#txtTipoProcesso, [id*="TipoProcesso"]');
-            if(tipoEl)p.tipo=tipoEl.textContent.trim();
-            var intEl=document.querySelector('#txtInteressados, [id*="Interessad"]');
-            if(intEl)p.interessado=intEl.textContent.trim();
-            var obsEl=document.querySelector('#txtObservacao, [id*="Observacao"]');
-            if(obsEl)p.observacoes=obsEl.textContent.trim();
-            processos.push(p);
-        }
-    }
-    if(processos.length===0){
-        alert('Nao foi possivel encontrar processos nesta pagina do SEI.');
-        return;
-    }
-    var json=JSON.stringify(processos);
-    /* Copy to clipboard */
-    if(navigator.clipboard){
-        navigator.clipboard.writeText(json).then(function(){
-            alert('Dados de '+processos.length+' processo(s) copiados! Cole no sistema de controle.');
-        });
-    }else{
-        var ta=document.createElement('textarea');
-        ta.value=json;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        alert('Dados de '+processos.length+' processo(s) copiados! Cole no sistema de controle.');
-    }
-})();`;
-
-    return 'javascript:' + encodeURIComponent(code.replace(/\s+/g, ' ').trim());
-}
 
 // ============================================================
 // Event Handlers
 // ============================================================
 
 function init() {
-    // Generate bookmarklet
-    const bookmarkletLink = $('#bookmarklet-link');
-    bookmarkletLink.href = generateBookmarklet();
-
     // Buttons
     $('#btn-add').addEventListener('click', () => openModal(null));
     $('#btn-export').addEventListener('click', exportData);

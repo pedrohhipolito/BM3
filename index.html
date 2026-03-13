@@ -13,8 +13,8 @@
             <span class="header-badge">CBMMG</span>
         </div>
         <div class="header-right">
-            <button id="btn-bookmarklet-info" class="btn btn-outline" title="Como importar do SEI">
-                &#128279; Importar do SEI
+            <button id="btn-bookmarklet-info" class="btn btn-outline" title="Colar dados do SEI">
+                &#128203; Importar do SEI
             </button>
             <button id="btn-export" class="btn btn-outline" title="Exportar dados">
                 &#128190; Exportar
@@ -185,7 +185,7 @@
         </div>
     </div>
 
-    <!-- Modal Bookmarklet -->
+    <!-- Modal Importar do SEI -->
     <div class="modal-overlay" id="bookmarklet-overlay" style="display:none">
         <div class="modal">
             <div class="modal-header">
@@ -193,23 +193,28 @@
                 <button class="modal-close" id="bookmarklet-close">&times;</button>
             </div>
             <div class="bookmarklet-content">
-                <h3>Método 1: Bookmarklet (Recomendado)</h3>
-                <p>Arraste o botão abaixo para sua barra de favoritos:</p>
-                <p class="bookmarklet-drag">
-                    <a id="bookmarklet-link" class="bookmarklet-btn" href="#">&#128279; Capturar SEI</a>
-                </p>
+                <h3>Como importar</h3>
                 <ol>
-                    <li>Arraste o botão acima para a barra de favoritos do navegador</li>
-                    <li>Acesse o SEI e abra a lista de processos ou um processo específico</li>
-                    <li>Clique no favorito "Capturar SEI"</li>
-                    <li>Os dados serão copiados — cole aqui no campo abaixo</li>
+                    <li>Abra o SEI na tela de <strong>Controle de Processos</strong> ou em um processo específico</li>
+                    <li>Selecione os dados da tabela de processos (ou da tela do processo) e copie (<strong>Ctrl+C</strong>)</li>
+                    <li>Cole no campo abaixo (<strong>Ctrl+V</strong>) e clique em <strong>Processar</strong></li>
                 </ol>
+                <p class="import-tip">O sistema reconhece automaticamente números de processo no formato SEI (ex: 00000.000000/0000-00)</p>
 
-                <h3>Método 2: Colar dados manualmente</h3>
-                <p>Copie os dados da tela do SEI e cole abaixo (o sistema tentará interpretar automaticamente):</p>
-                <textarea id="paste-sei-data" rows="6" placeholder="Cole aqui os dados copiados do SEI ou do bookmarklet..."></textarea>
-                <button class="btn btn-primary" id="btn-parse-paste" style="margin-top:8px">Processar Dados</button>
-                <div id="parse-result" style="margin-top:8px"></div>
+                <textarea id="paste-sei-data" rows="8" placeholder="Cole aqui os dados copiados do SEI...&#10;&#10;Exemplos do que funciona:&#10;- Tabela de processos copiada do SEI&#10;- Número do processo (um por linha)&#10;- Dados separados por tab (copiados de planilha)&#10;- JSON exportado de outro sistema"></textarea>
+                <div class="import-actions">
+                    <button class="btn btn-primary" id="btn-parse-paste">Processar Dados</button>
+                    <span id="parse-result"></span>
+                </div>
+
+                <div class="import-example">
+                    <h4>Formatos aceitos:</h4>
+                    <pre>00090.000123/2024-01    Ofício    João Silva    Licença
+00090.000456/2024-02    Memorando    Maria Souza    Sindicância</pre>
+                    <p>Ou simplesmente um número por linha:</p>
+                    <pre>00090.000123/2024-01
+00090.000456/2024-02</pre>
+                </div>
             </div>
         </div>
     </div>
