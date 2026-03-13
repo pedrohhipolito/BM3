@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #fff;
+      color: #333;
+    }
+    .header {
+      background: #c0392b;
+      color: #fff;
+      padding: 16px;
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .header p {
+      font-size: 11px;
+      opacity: 0.85;
+    }
+    .content {
+      padding: 16px;
+    }
+    .section {
+      margin-bottom: 16px;
+    }
+    .section h3 {
+      font-size: 13px;
+      color: #c0392b;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #eee;
+      padding-bottom: 4px;
+    }
+    .section p, .section li {
+      font-size: 12px;
+      line-height: 1.6;
+      color: #555;
+    }
+    .section ol {
+      padding-left: 20px;
+    }
+    .status {
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .status.ok {
+      background: #d5f5e3;
+      color: #1e8449;
+    }
+    .status.warn {
+      background: #fdebd0;
+      color: #b9770e;
+    }
+    .footer {
+      padding: 12px 16px;
+      background: #f8f8f8;
+      border-top: 1px solid #eee;
+      text-align: center;
+      font-size: 10px;
+      color: #999;
+    }
+    kbd {
+      background: #eee;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 11px;
+      border: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>BM3 - Captura SEI</h1>
+    <p>Controle de Processos CBMMG</p>
+  </div>
+
+  <div class="content">
+    <div class="status" id="status">
+      Verificando...
+    </div>
+
+    <div class="section">
+      <h3>Como usar</h3>
+      <ol>
+        <li>Abra o <strong>SEI</strong> na tela de <strong>Controle de Processos</strong></li>
+        <li>Clique no botão <strong>B3</strong> (vermelho, canto inferior direito)</li>
+        <li>Clique em <strong>"Capturar Processos"</strong></li>
+        <li>Selecione os processos desejados</li>
+        <li>Clique em <strong>"Copiar para BM3"</strong> ou <strong>"Exportar JSON"</strong></li>
+        <li>No BM3, use <strong>"Importar &gt; Colar Dados"</strong> e cole (<kbd>Ctrl+V</kbd>)</li>
+      </ol>
+    </div>
+
+    <div class="section">
+      <h3>Dados capturados</h3>
+      <p>A extensão extrai da tabela do SEI:</p>
+      <ul style="padding-left: 20px; margin-top: 4px;">
+        <li>Número do processo</li>
+        <li>Tipo / Especificação</li>
+        <li>Marcador</li>
+        <li>Atribuição</li>
+        <li>Anotações</li>
+        <li>Ponto de controle</li>
+        <li>Data de recebimento</li>
+        <li>Status (lido/não lido)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="footer">
+    BM3 v1.0.0 - CBMMG
+  </div>
+
+  <script src="js/popup.js"></script>
+</body>
+</html>

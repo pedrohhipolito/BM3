@@ -21,14 +21,33 @@ Sistema web para gerenciamento e acompanhamento de processos do SEI (Sistema Ele
 
 ## Importação do SEI
 
-### Bookmarklet
-1. Acesse o sistema e clique em **Importar do SEI**
-2. Arraste o botão "Capturar SEI" para a barra de favoritos
-3. No SEI, clique no favorito para copiar os dados dos processos
-4. Cole os dados no campo de importação
+### Extensão Chrome BM3 (Recomendado)
+
+Extensão própria que captura processos diretamente da tela do SEI.
+
+**Instalação:**
+1. Abra `chrome://extensions` no Chrome
+2. Ative o **Modo do desenvolvedor** (canto superior direito)
+3. Clique em **Carregar sem compactação**
+4. Selecione a pasta `extensao/` deste projeto
+
+**Uso:**
+1. Acesse o SEI e vá para a tela de **Controle de Processos**
+2. Clique no botão **B3** (vermelho, canto inferior direito da tela)
+3. Clique em **Capturar Processos** — a extensão lê a tabela do SEI
+4. Selecione os processos desejados
+5. Clique em **Copiar para BM3** ou **Exportar JSON**
+6. No BM3, use **Importar > Colar Dados** e cole (Ctrl+V), ou **Importar JSON**
+
+**Dados capturados automaticamente:**
+- Número do processo, tipo/especificação, marcador, atribuição
+- Anotações, ponto de controle, data de recebimento, status lido/não lido
 
 ### Colar dados
 Copie dados do SEI (tabelas, listas) e cole no campo de importação — o sistema interpreta automaticamente números de processo no formato SEI.
+
+### Importar PDF
+Exporte um PDF do SEI e importe pelo botão **Importar PDF** — o sistema extrai automaticamente os números de processo.
 
 ## Atalhos de teclado
 
@@ -39,7 +58,14 @@ Copie dados do SEI (tabelas, listas) e cole no campo de importação — o siste
 ## Estrutura
 
 ```
-index.html       — Página principal
-css/style.css    — Estilos
-js/app.js        — Lógica da aplicação
+index.html              — Página principal
+css/style.css           — Estilos
+js/app.js               — Lógica da aplicação
+extensao/               — Extensão Chrome para captura do SEI
+  manifest.json         — Configuração da extensão
+  popup.html            — Popup da extensão
+  js/content.js         — Script que roda na página do SEI
+  js/popup.js           — Script do popup
+  css/bm3-sei.css       — Estilos injetados no SEI
+  icons/                — Ícones da extensão
 ```

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head><title>Gerar Ícones BM3</title></head>
+<body>
+<p>Abra este arquivo no navegador e clique nos botões para baixar os ícones. Depois coloque-os na pasta <code>extensao/icons/</code>.</p>
+<canvas id="c16" width="16" height="16"></canvas>
+<canvas id="c48" width="48" height="48"></canvas>
+<canvas id="c128" width="128" height="128"></canvas>
+<br>
+<button onclick="download(16)">Baixar 16x16</button>
+<button onclick="download(48)">Baixar 48x48</button>
+<button onclick="download(128)">Baixar 128x128</button>
+<button onclick="downloadAll()">Baixar Todos</button>
+
+<script>
+function drawIcon(size) {
+  const canvas = document.getElementById('c' + size);
+  const ctx = canvas.getContext('2d');
+
+  // Fundo vermelho CBMMG
+  ctx.fillStyle = '#c0392b';
+  ctx.beginPath();
+  ctx.roundRect(0, 0, size, size, size * 0.15);
+  ctx.fill();
+
+  // Texto B3
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `bold ${size * 0.5}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('B3', size / 2, size / 2);
+}
+
+function download(size) {
+  drawIcon(size);
+  const canvas = document.getElementById('c' + size);
+  const link = document.createElement('a');
+  link.download = `icon-${size}.png`;
+  link.href = canvas.toDataURL();
+  link.click();
+}
+
+function downloadAll() {
+  [16, 48, 128].forEach(s => download(s));
+}
+
+// Draw on load
+[16, 48, 128].forEach(s => drawIcon(s));
+</script>
+</body>
+</html>

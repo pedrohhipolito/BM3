@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "BM3 - Captura SEI CBMMG",
+  "short_name": "BM3 SEI",
+  "description": "Captura processos do SEI e exporta para o sistema BM3 de controle de processos do CBMMG",
+  "version": "1.0.0",
+  "author": "CBMMG - BM3",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "action": {
+    "default_title": "BM3 - Captura SEI",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.mg.gov.br/sei/*",
+        "*://*.mg.gov.br/*/sei/*",
+        "*://*.br/sei/*",
+        "*://*.br/*/sei/*",
+        "*://*.br/*controlador.php?acao=procedimento_controlar*",
+        "*://*.br/*controlador.php?acao=procedimento_trabalhar*"
+      ],
+      "exclude_matches": [
+        "*://*.br/*login.php*",
+        "*://*.br/sei/*controlador_externo.php*"
+      ],
+      "js": ["js/content.js"],
+      "css": ["css/bm3-sei.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
