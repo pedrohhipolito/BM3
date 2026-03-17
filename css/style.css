@@ -843,6 +843,68 @@ body {
     margin-left: 4px;
 }
 
+/* === Storage Indicator === */
+.storage-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.1);
+    font-size: 0.7rem;
+    min-width: 140px;
+}
+
+.storage-bar {
+    width: 60px;
+    height: 6px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.storage-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+
+.storage-ok .storage-fill { background: #2ecc71; }
+.storage-warning .storage-fill { background: #f39c12; }
+.storage-critical .storage-fill { background: #e74c3c; }
+
+.storage-text {
+    color: rgba(255,255,255,0.8);
+    white-space: nowrap;
+}
+
+.storage-warning .storage-text { color: #fdebd0; }
+.storage-critical .storage-text { color: #fadbd8; font-weight: 600; }
+
+/* === Doc Alerts & Errors === */
+.doc-alerta {
+    padding: 8px 12px;
+    background: #fff3cd;
+    color: #856404;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    margin-bottom: 8px;
+    border-left: 3px solid #f39c12;
+}
+
+.doc-item-warn {
+    border-left-color: var(--warning) !important;
+    background: #fffdf5 !important;
+}
+
+.doc-erro-msg {
+    font-size: 0.75rem;
+    color: var(--danger);
+    font-style: italic;
+    margin-top: 2px;
+}
+
 /* === Responsive === */
 @media (max-width: 768px) {
     .header { flex-direction: column; gap: 12px; }

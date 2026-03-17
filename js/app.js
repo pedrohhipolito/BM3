@@ -19,7 +19,75 @@ function loadProcessos() {
 }
 
 function saveProcessos(processos) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(processos));
+    const json = JSON.stringify(processos);
+    try {
+        localStorage.setItem(STORAGE_KEY, json);
+        updateStorageIndicator();
+    } catch (e) {
+        // localStorage cheio — tentar salvar sem conteúdo dos documentos
+        if (e.name === 'QuotaExceededError' || e.code === 22) {
+            console.warn('BM3: localStorage cheio, removendo conteúdo de documentos para liberar espaço...');
+            const slim = processos.map(p => ({
+                ...p,
+                documentos: (p.documentos || []).map(d => ({
+                    ...d,
+                    conteudo: d.conteudo ? d.conteudo.substring(0, 500) + '\n\n[... CONTEÚDO TRUNCADO — armazenamento cheio. Exporte para JSON para manter tudo.]' : '',
+                    conteudo_completo: false,
+                    conteudo_erro: d.conteudo && d.conteudo.length > 500 ? 'Truncado por limite de armazenamento' : d.conteudo_erro
+                }))
+            }));
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+                updateStorageIndicator();
+                showStorageAlert(json.length);
+            } catch (e2) {
+                alert('Erro crítico: armazenamento do navegador completamente cheio. Exporte seus dados (botão Exportar) e limpe processos antigos.');
+            }
+        }
+    }
+}
+
+function getStorageUsage() {
+    let total = 0;
+    for (let key in localStorage) {
+        if (localStorage.hasOwnProperty(key)) {
+            total += localStorage.getItem(key).length * 2; // UTF-16 = 2 bytes por char
+        }
+    }
+    const maxBytes = 5 * 1024 * 1024; // 5MB padrão
+    return { usedBytes: total, maxBytes, percent: Math.round((total / maxBytes) * 100) };
+}
+
+function updateStorageIndicator() {
+    const indicator = $('#storage-indicator');
+    if (!indicator) return;
+
+    const { usedBytes, maxBytes, percent } = getStorageUsage();
+    const usedMB = (usedBytes / (1024 * 1024)).toFixed(2);
+    const maxMB = (maxBytes / (1024 * 1024)).toFixed(0);
+
+    let colorClass = 'storage-ok';
+    if (percent > 90) colorClass = 'storage-critical';
+    else if (percent > 70) colorClass = 'storage-warning';
+
+    indicator.innerHTML = `
+        <div class="storage-bar ${colorClass}">
+            <div class="storage-fill" style="width:${Math.min(percent, 100)}%"></div>
+        </div>
+        <span class="storage-text">${usedMB}MB / ${maxMB}MB (${percent}%)</span>
+    `;
+    indicator.className = `storage-indicator ${colorClass}`;
+}
+
+function showStorageAlert(originalSize) {
+    const { percent } = getStorageUsage();
+    const msg = `Armazenamento quase cheio (${percent}%)!\n\n` +
+        `O conteúdo de alguns documentos foi truncado para caber.\n` +
+        `Para manter os dados completos:\n` +
+        `1. Clique em "Exportar" para salvar um JSON completo\n` +
+        `2. Remova processos antigos/concluídos\n\n` +
+        `Dica: O JSON exportado não tem limite de tamanho.`;
+    alert(msg);
 }
 
 function generateId() {
@@ -364,29 +432,50 @@ function renderDocumentos(p) {
     const docs = p.documentos || [];
     if (docs.length === 0) return '';
 
-    const docItems = docs.map((d, i) => `
-        <div class="doc-item">
-            <span class="doc-icon">&#128196;</span>
+    const docsComErro = docs.filter(d => d.conteudo_erro);
+
+    const docItems = docs.map((d, i) => {
+        const statusIcon = d.conteudo ? '&#9989;' : (d.conteudo_erro ? '&#9888;' : '&#128196;');
+        const itemClass = d.conteudo_erro && !d.conteudo ? 'doc-item doc-item-warn' : 'doc-item';
+
+        return `
+        <div class="${itemClass}">
+            <span class="doc-icon">${statusIcon}</span>
             <div class="doc-info">
                 <div class="doc-nome">${escapeHtml(d.nome)}</div>
                 ${d.tipo ? `<span class="doc-tipo">${escapeHtml(d.tipo)}</span>` : ''}
                 ${d.descricao ? `<div class="doc-descricao">${escapeHtml(d.descricao)}</div>` : ''}
+                ${d.conteudo_erro ? `<div class="doc-erro-msg">${escapeHtml(d.conteudo_erro)}</div>` : ''}
                 ${d.conteudo ? `
                     <details class="doc-conteudo-toggle">
-                        <summary>Ver conteúdo</summary>
+                        <summary>Ver conteúdo (${formatBytes(d.conteudo.length * 2)})</summary>
                         <div class="doc-conteudo">${escapeHtml(d.conteudo).replace(/\n/g, '<br>')}</div>
                     </details>
                 ` : ''}
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
+
+    const alertaHtml = docsComErro.length > 0 ? `
+        <div class="doc-alerta">
+            &#9888; ${docsComErro.length} documento(s) não tiveram conteúdo extraído (PDF, imagem ou acesso restrito).
+        </div>` : '';
+
+    const docsComConteudo = docs.filter(d => d.conteudo).length;
 
     return `
         <div class="detail-field full-width detail-documentos">
-            <label>Documentos / Anexos (${docs.length})</label>
+            <label>Documentos / Anexos (${docs.length}${docsComConteudo > 0 ? ` — ${docsComConteudo} com conteúdo` : ''})</label>
+            ${alertaHtml}
             <div class="doc-list">${docItems}</div>
         </div>
     `;
+}
+
+function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
 function renderAndamentos(p) {
@@ -1083,6 +1172,7 @@ function init() {
 
     // Initial render
     render();
+    updateStorageIndicator();
 }
 
 function debounce(fn, ms) {

@@ -299,36 +299,47 @@
   }
 
   // --- Buscar conteúdo de um documento HTML interno ---
+  // Retorna { texto, completo, erro } para rastrear status da captura
   async function fetchConteudoDocumento(idDocumento) {
-    if (!idDocumento) return '';
+    if (!idDocumento) return { texto: '', completo: false, erro: 'Sem ID' };
     try {
       const doc = await fetchSEIPage('documento_visualizar', {
         id_documento: idDocumento,
         id_orgao_acesso_externo: 0
       });
-      if (!doc) return '';
+      if (!doc) return { texto: '', completo: false, erro: 'Página não carregou' };
 
-      // SEI renderiza o documento em um iframe ou diretamente no corpo
-      // Tentar extrair de diferentes containers
+      // SEI renderiza o documento em containers específicos
       const conteudoEl = doc.querySelector(
         '#divConteudo, #divDocumento, .documento-conteudo, .infraAreaTexto, #divVer'
       );
-      if (conteudoEl) return conteudoEl.textContent.trim();
-
-      // Tentar o body inteiro se não achou container específico
-      const body = doc.querySelector('body');
-      if (body) {
-        // Remover scripts e styles
-        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema').forEach(el => el.remove());
-        const texto = body.textContent.trim();
-        // Só retorna se parecer ter conteúdo relevante (mais que menus/navegação)
-        if (texto.length > 100) return texto.substring(0, 5000); // limitar tamanho
+      if (conteudoEl) {
+        return { texto: conteudoEl.textContent.trim(), completo: true, erro: null };
       }
 
-      return '';
+      // Fallback: body inteiro (limpando navegação)
+      const body = doc.querySelector('body');
+      if (body) {
+        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao').forEach(el => el.remove());
+        const texto = body.textContent.trim();
+        if (texto.length > 100) {
+          return { texto, completo: true, erro: null };
+        }
+      }
+
+      // Pode ser PDF/imagem dentro de iframe — não é possível extrair texto
+      const iframe = doc.querySelector('iframe[src]');
+      if (iframe) {
+        const src = iframe.getAttribute('src') || '';
+        if (src.includes('.pdf') || src.includes('anexo')) {
+          return { texto: '', completo: false, erro: 'Documento externo (PDF/anexo) — conteúdo não extraível automaticamente' };
+        }
+      }
+
+      return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
     } catch (err) {
       console.warn('BM3: Erro ao buscar conteúdo do documento', idDocumento, err);
-      return '';
+      return { texto: '', completo: false, erro: `Erro: ${err.message}` };
     }
   }
 
@@ -532,6 +543,7 @@
   }
 
   let capturedProcessos = [];
+  let capturedDocsReport = [];
   let allSelected = false;
 
   function togglePanel() {
@@ -574,7 +586,7 @@
     btnDeep.disabled = true;
     btnDeep.textContent = 'Buscando...';
 
-    let docsTotal = 0, andTotal = 0;
+    let docsTotal = 0, andTotal = 0, docsComConteudo = 0, docsFalharam = [];
     for (let i = 0; i < capturedProcessos.length; i++) {
       const proc = capturedProcessos[i];
       document.getElementById('bm3-info').innerHTML =
@@ -590,13 +602,25 @@
       docsTotal += proc.documentos.length;
       andTotal += proc.andamentos.length;
 
-      // Buscar conteúdo dos primeiros 10 documentos HTML
-      for (let j = 0; j < Math.min(proc.documentos.length, 10); j++) {
-        const doc = proc.documentos[j];
-        if (doc.id_documento) {
+      // Buscar conteúdo de TODOS os documentos
+      for (let j = 0; j < proc.documentos.length; j++) {
+        const docItem = proc.documentos[j];
+        if (docItem.id_documento) {
           document.getElementById('bm3-info').innerHTML =
-            `<strong>${proc.numero}:</strong> Lendo doc ${j + 1}/${proc.documentos.length}...`;
-          doc.conteudo = await fetchConteudoDocumento(doc.id_documento);
+            `<strong>${proc.numero}:</strong> Lendo doc ${j + 1}/${proc.documentos.length} — ${docItem.nome}`;
+
+          const resultado = await fetchConteudoDocumento(docItem.id_documento);
+          docItem.conteudo = resultado.texto;
+          docItem.conteudo_completo = resultado.completo;
+          docItem.conteudo_erro = resultado.erro;
+
+          if (resultado.texto) {
+            docsComConteudo++;
+          }
+          if (resultado.erro) {
+            docsFalharam.push({ processo: proc.numero, documento: docItem.nome, erro: resultado.erro });
+          }
+
           await sleep(200);
         }
       }
@@ -607,11 +631,32 @@
     btnDeep.disabled = false;
     btnDeep.textContent = 'Captura Completa';
 
+    // Resumo na barra de info
     document.getElementById('bm3-info').innerHTML =
-      `<strong>${count}</strong> processo(s) | <strong>${docsTotal}</strong> documento(s) | <strong>${andTotal}</strong> andamento(s)`;
+      `<strong>${count}</strong> processo(s) | <strong>${docsTotal}</strong> doc(s) | ` +
+      `<strong>${docsComConteudo}</strong> com conteúdo | <strong>${andTotal}</strong> andamento(s)` +
+      (docsFalharam.length > 0 ? ` | <span style="color:#e74c3c"><strong>${docsFalharam.length}</strong> sem conteúdo</span>` : '');
 
     renderProcessList();
-    showToast(`Captura completa: ${count} processos, ${docsTotal} documentos, ${andTotal} andamentos!`);
+
+    // Alertar sobre documentos sem conteúdo
+    if (docsFalharam.length > 0) {
+      const resumo = docsFalharam.slice(0, 10).map(f =>
+        `• ${f.processo} → ${f.documento}: ${f.erro}`
+      ).join('\n');
+      const extra = docsFalharam.length > 10 ? `\n... e mais ${docsFalharam.length - 10} documento(s)` : '';
+
+      showToast(`${docsFalharam.length} documento(s) sem conteúdo extraível. Veja o console (F12) para detalhes.`, true);
+      console.group('BM3 — Documentos sem conteúdo');
+      console.table(docsFalharam);
+      console.groupEnd();
+
+      // Salvar relatório de falhas para acesso no painel
+      capturedDocsReport = docsFalharam;
+    } else {
+      showToast(`Captura completa: ${count} processos, ${docsTotal} documentos (${docsComConteudo} com conteúdo), ${andTotal} andamentos!`);
+      capturedDocsReport = [];
+    }
   }
 
   function renderProcessList() {
@@ -643,7 +688,11 @@
         </div>
         ${proc.documentos && proc.documentos.length > 0 ? `
         <div class="bm3-proc-docs">
-          ${proc.documentos.slice(0, 5).map(d => `<div class="bm3-doc-item">${d.tipo ? `<strong>${d.tipo}:</strong> ` : ''}${d.nome}${d.conteudo ? ' <em>(com conteúdo)</em>' : ''}</div>`).join('')}
+          ${proc.documentos.slice(0, 5).map(d => {
+            const status = d.conteudo ? '&#9989;' : (d.conteudo_erro ? '&#9888;' : '');
+            const statusClass = d.conteudo ? 'bm3-doc-ok' : (d.conteudo_erro ? 'bm3-doc-warn' : '');
+            return `<div class="bm3-doc-item ${statusClass}">${status} ${d.tipo ? `<strong>${d.tipo}:</strong> ` : ''}${d.nome}${d.conteudo_erro ? ` <em class="bm3-doc-erro">(${d.conteudo_erro})</em>` : ''}</div>`;
+          }).join('')}
           ${proc.documentos.length > 5 ? `<div class="bm3-doc-item bm3-doc-more">... e mais ${proc.documentos.length - 5} documento(s)</div>` : ''}
         </div>` : ''}
         ${proc.andamentos && proc.andamentos.length > 0 ? `
@@ -728,7 +777,9 @@
         nome: d.nome || '',
         tipo: d.tipo || '',
         descricao: d.descricao || '',
-        conteudo: d.conteudo || ''
+        conteudo: d.conteudo || '',
+        conteudo_completo: d.conteudo_completo !== false,
+        conteudo_erro: d.conteudo_erro || null
       })),
       andamentos: (p.andamentos || []).map(a => ({
         data: a.data || '',

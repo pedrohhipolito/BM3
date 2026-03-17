@@ -298,6 +298,20 @@
   font-style: italic;
 }
 
+.bm3-doc-ok {
+  color: #1e8449;
+}
+
+.bm3-doc-warn {
+  color: #856404;
+  background: #fff3cd;
+}
+
+.bm3-doc-erro {
+  font-size: 10px;
+  color: #e74c3c;
+}
+
 /* Andamentos no item do processo */
 .bm3-proc-tag.andamento {
   background: #d6eaf8;
