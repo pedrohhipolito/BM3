@@ -145,11 +145,10 @@
   }
 
   // ============================================================
-  // Scraping: Captura documentos da página de detalhes
+  // Scraping Profundo: Captura dados completos do processo
   // ============================================================
 
   function buildSEIUrl(action, params) {
-    // Construir URL do SEI baseada na URL atual
     const base = window.location.href.split('controlador.php')[0] + 'controlador.php';
     const queryParts = [`acao=${action}`];
     for (const [k, v] of Object.entries(params)) {
@@ -158,124 +157,310 @@
     return base + '?' + queryParts.join('&');
   }
 
-  async function fetchDocumentos(idProcedimento) {
-    if (!idProcedimento) return [];
-
+  async function fetchSEIPage(action, params) {
     try {
-      const url = buildSEIUrl('procedimento_trabalhar', { id_procedimento: idProcedimento });
+      const url = buildSEIUrl(action, params);
       const resp = await fetch(url, { credentials: 'same-origin' });
-      if (!resp.ok) return [];
-
+      if (!resp.ok) return null;
       const html = await resp.text();
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-
-      const documentos = [];
-
-      // SEI exibe documentos na árvore (divArvore) ou em tabelas de documentos
-      // Padrão 1: Links de documentos na árvore
-      const docLinks = doc.querySelectorAll(
-        'a[href*="documento_consultar"], a[href*="protocolo_visualizar"], a[href*="documento_visualizar"]'
-      );
-
-      docLinks.forEach(link => {
-        const texto = link.textContent.trim();
-        if (!texto) return;
-
-        const href = link.getAttribute('href') || '';
-        const params = getParamsFromUrl(href);
-        const idDoc = params.id_documento || params.id_protocolo || '';
-
-        // Tooltip pode ter mais info
-        const tooltip = extractTooltipText(link.getAttribute('onmouseover') || '');
-
-        // Ícone/imagem adjacente pode indicar o tipo
-        const img = link.querySelector('img') || link.previousElementSibling;
-        let tipoDoc = '';
-        if (img && img.getAttribute) {
-          tipoDoc = img.getAttribute('title') || img.getAttribute('alt') || '';
-        }
-
-        documentos.push({
-          id_documento: idDoc,
-          nome: texto,
-          tipo: tipoDoc || extrairTipoDocumento(texto),
-          descricao: tooltip,
-          url: href
-        });
-      });
-
-      // Padrão 2: Tabela de documentos (alguns layouts SEI)
-      if (documentos.length === 0) {
-        const tabelasDocs = doc.querySelectorAll('table[id*="documento"], table[id*="Documento"]');
-        tabelasDocs.forEach(tabela => {
-          const rows = tabela.querySelectorAll('tr');
-          rows.forEach(row => {
-            const tds = row.querySelectorAll('td');
-            if (tds.length < 2) return;
-
-            const link = row.querySelector('a');
-            if (!link) return;
-
-            const nome = link.textContent.trim();
-            const href = link.getAttribute('href') || '';
-            const params = getParamsFromUrl(href);
-            const idDoc = params.id_documento || params.id_protocolo || '';
-
-            // Colunas adicionais podem ter tipo e data
-            let tipoDoc = '';
-            let dataDoc = '';
-            tds.forEach(td => {
-              const text = td.textContent.trim();
-              if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) {
-                dataDoc = text;
-              } else if (text !== nome && text.length > 2 && text.length < 60) {
-                if (!tipoDoc) tipoDoc = text;
-              }
-            });
-
-            documentos.push({
-              id_documento: idDoc,
-              nome: nome,
-              tipo: tipoDoc || extrairTipoDocumento(nome),
-              descricao: dataDoc ? `Data: ${dataDoc}` : '',
-              url: href
-            });
-          });
-        });
-      }
-
-      // Padrão 3: Spans/divs com classe de documento
-      if (documentos.length === 0) {
-        const spansDocs = doc.querySelectorAll(
-          '[class*="arvore"] a, [id*="arvore"] a, [class*="tree"] a'
-        );
-        spansDocs.forEach(link => {
-          const texto = link.textContent.trim();
-          if (!texto || texto.length < 3) return;
-          const href = link.getAttribute('href') || '';
-          if (!href.includes('documento') && !href.includes('protocolo')) return;
-
-          const params = getParamsFromUrl(href);
-          documentos.push({
-            id_documento: params.id_documento || params.id_protocolo || '',
-            nome: texto,
-            tipo: extrairTipoDocumento(texto),
-            descricao: '',
-            url: href
-          });
-        });
-      }
-
-      return documentos;
+      return new DOMParser().parseFromString(html, 'text/html');
     } catch (err) {
-      console.warn('BM3: Erro ao buscar documentos do processo', idProcedimento, err);
-      return [];
+      console.warn('BM3: Erro ao buscar página SEI', action, err);
+      return null;
     }
   }
 
+  // --- Captura completa de dados de um processo ---
+  async function fetchDadosCompletos(idProcedimento) {
+    if (!idProcedimento) return {};
+
+    const resultado = {
+      documentos: [],
+      andamentos: [],
+      anotacao_completa: '',
+      marcador_detalhado: null
+    };
+
+    // Buscar página principal do processo (árvore de documentos)
+    const docPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
+    if (docPage) {
+      resultado.documentos = extrairDocumentos(docPage);
+    }
+
+    // Buscar andamentos/histórico
+    await sleep(200);
+    const andPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
+    if (andPage) {
+      resultado.andamentos = extrairAndamentos(andPage);
+    }
+
+    // Buscar anotações completas
+    await sleep(200);
+    const anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
+    if (anotPage) {
+      resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
+    }
+
+    // Buscar marcador detalhado
+    await sleep(200);
+    const marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
+    if (marcPage) {
+      resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
+    }
+
+    return resultado;
+  }
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  // --- Documentos ---
+  function extrairDocumentos(doc) {
+    const documentos = [];
+
+    // Padrão 1: Links de documentos na árvore do SEI
+    const docLinks = doc.querySelectorAll(
+      'a[href*="documento_consultar"], a[href*="protocolo_visualizar"], a[href*="documento_visualizar"]'
+    );
+
+    docLinks.forEach(link => {
+      const texto = link.textContent.trim();
+      if (!texto) return;
+
+      const href = link.getAttribute('href') || '';
+      const params = getParamsFromUrl(href);
+      const idDoc = params.id_documento || params.id_protocolo || '';
+      const tooltip = extractTooltipText(link.getAttribute('onmouseover') || '');
+
+      const img = link.querySelector('img') || link.previousElementSibling;
+      let tipoDoc = '';
+      if (img && img.getAttribute) {
+        tipoDoc = img.getAttribute('title') || img.getAttribute('alt') || '';
+      }
+
+      documentos.push({
+        id_documento: idDoc,
+        nome: texto,
+        tipo: tipoDoc || extrairTipoDocumento(texto),
+        descricao: tooltip,
+        conteudo: '' // será preenchido depois se solicitado
+      });
+    });
+
+    // Padrão 2: Tabela de documentos
+    if (documentos.length === 0) {
+      const tabelasDocs = doc.querySelectorAll('table[id*="documento"], table[id*="Documento"]');
+      tabelasDocs.forEach(tabela => {
+        tabela.querySelectorAll('tr').forEach(row => {
+          const tds = row.querySelectorAll('td');
+          if (tds.length < 2) return;
+          const link = row.querySelector('a');
+          if (!link) return;
+
+          const nome = link.textContent.trim();
+          const href = link.getAttribute('href') || '';
+          const params = getParamsFromUrl(href);
+
+          let tipoDoc = '', dataDoc = '';
+          tds.forEach(td => {
+            const text = td.textContent.trim();
+            if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) dataDoc = text;
+            else if (text !== nome && text.length > 2 && text.length < 60 && !tipoDoc) tipoDoc = text;
+          });
+
+          documentos.push({
+            id_documento: params.id_documento || params.id_protocolo || '',
+            nome, tipo: tipoDoc || extrairTipoDocumento(nome),
+            descricao: dataDoc ? `Data: ${dataDoc}` : '',
+            conteudo: ''
+          });
+        });
+      });
+    }
+
+    // Padrão 3: Árvore genérica
+    if (documentos.length === 0) {
+      doc.querySelectorAll('[class*="arvore"] a, [id*="arvore"] a, [class*="tree"] a').forEach(link => {
+        const texto = link.textContent.trim();
+        if (!texto || texto.length < 3) return;
+        const href = link.getAttribute('href') || '';
+        if (!href.includes('documento') && !href.includes('protocolo')) return;
+        const params = getParamsFromUrl(href);
+        documentos.push({
+          id_documento: params.id_documento || params.id_protocolo || '',
+          nome: texto, tipo: extrairTipoDocumento(texto),
+          descricao: '', conteudo: ''
+        });
+      });
+    }
+
+    return documentos;
+  }
+
+  // --- Buscar conteúdo de um documento HTML interno ---
+  async function fetchConteudoDocumento(idDocumento) {
+    if (!idDocumento) return '';
+    try {
+      const doc = await fetchSEIPage('documento_visualizar', {
+        id_documento: idDocumento,
+        id_orgao_acesso_externo: 0
+      });
+      if (!doc) return '';
+
+      // SEI renderiza o documento em um iframe ou diretamente no corpo
+      // Tentar extrair de diferentes containers
+      const conteudoEl = doc.querySelector(
+        '#divConteudo, #divDocumento, .documento-conteudo, .infraAreaTexto, #divVer'
+      );
+      if (conteudoEl) return conteudoEl.textContent.trim();
+
+      // Tentar o body inteiro se não achou container específico
+      const body = doc.querySelector('body');
+      if (body) {
+        // Remover scripts e styles
+        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema').forEach(el => el.remove());
+        const texto = body.textContent.trim();
+        // Só retorna se parecer ter conteúdo relevante (mais que menus/navegação)
+        if (texto.length > 100) return texto.substring(0, 5000); // limitar tamanho
+      }
+
+      return '';
+    } catch (err) {
+      console.warn('BM3: Erro ao buscar conteúdo do documento', idDocumento, err);
+      return '';
+    }
+  }
+
+  // --- Andamentos / Histórico de movimentação ---
+  function extrairAndamentos(doc) {
+    const andamentos = [];
+
+    // SEI exibe andamentos em tabela (tblHistorico ou similar)
+    const tabelas = doc.querySelectorAll(
+      '#tblHistorico, table[id*="historico"], table[id*="Historico"], ' +
+      '#tblAndamentos, table[id*="andamento"], table[id*="Andamento"], ' +
+      'table.infraTable'
+    );
+
+    tabelas.forEach(tabela => {
+      const rows = tabela.querySelectorAll('tr');
+      rows.forEach(row => {
+        const tds = row.querySelectorAll('td');
+        if (tds.length < 2) return;
+
+        let data = '', unidade = '', usuario = '', descricao = '';
+
+        tds.forEach((td, i) => {
+          const text = td.textContent.trim();
+
+          // Detectar data (DD/MM/YYYY HH:MM:SS ou DD/MM/YYYY)
+          if (/^\d{2}\/\d{2}\/\d{4}/.test(text) && !data) {
+            data = text;
+          }
+          // Detectar unidade (sigla em maiúsculas com /)
+          else if (/^[A-Z]{2,}[\/-]/.test(text) && !unidade) {
+            unidade = text;
+          }
+          // Descrição é geralmente o campo mais longo
+          else if (text.length > 5) {
+            if (!descricao) descricao = text;
+            else if (!usuario && text.length < descricao.length) usuario = text;
+          }
+        });
+
+        // Também verificar tooltips nas células para mais detalhes
+        tds.forEach(td => {
+          const links = td.querySelectorAll('a[onmouseover]');
+          links.forEach(link => {
+            const tip = extractTooltipText(link.getAttribute('onmouseover') || '');
+            if (tip && tip.length > descricao.length) descricao = tip;
+          });
+        });
+
+        if (data || descricao) {
+          andamentos.push({ data, unidade, usuario, descricao });
+        }
+      });
+    });
+
+    // Se não encontrou em tabela, tentar em divs/listas
+    if (andamentos.length === 0) {
+      doc.querySelectorAll('.andamento, .historico-item, [class*="andamento"]').forEach(el => {
+        const text = el.textContent.trim();
+        const dateMatch = text.match(/(\d{2}\/\d{2}\/\d{4}[\s\d:]*)/);
+        if (dateMatch) {
+          andamentos.push({
+            data: dateMatch[1].trim(),
+            unidade: '',
+            usuario: '',
+            descricao: text.replace(dateMatch[0], '').trim()
+          });
+        }
+      });
+    }
+
+    return andamentos;
+  }
+
+  // --- Anotação completa ---
+  function extrairAnotacaoCompleta(doc) {
+    // Textarea ou div com o conteúdo da anotação
+    const textarea = doc.querySelector(
+      '#txaDescricao, textarea[name*="descricao"], textarea[name*="anotacao"], ' +
+      '#txaConteudo, textarea[id*="anotacao"]'
+    );
+    if (textarea) return textarea.value || textarea.textContent || '';
+
+    // Div de visualização
+    const divAnot = doc.querySelector(
+      '#divDescricao, .anotacao-conteudo, [id*="anotacao"], [class*="anotacao"]'
+    );
+    if (divAnot) return divAnot.textContent.trim();
+
+    return '';
+  }
+
+  // --- Marcador detalhado ---
+  function extrairMarcadorDetalhado(doc) {
+    // Tabela de marcadores do processo
+    const rows = doc.querySelectorAll('tr');
+    const marcadores = [];
+
+    rows.forEach(row => {
+      const tds = row.querySelectorAll('td');
+      if (tds.length < 2) return;
+
+      let nome = '', cor = '', texto = '';
+
+      tds.forEach(td => {
+        // Imagem colorida = cor do marcador
+        const img = td.querySelector('img');
+        if (img) {
+          cor = img.getAttribute('title') || img.getAttribute('alt') || '';
+          if (!cor) {
+            const src = img.getAttribute('src') || '';
+            const corMatch = src.match(/marcador_(\w+)/i);
+            if (corMatch) cor = corMatch[1];
+          }
+        }
+
+        const text = td.textContent.trim();
+        if (text && text.length > 1) {
+          if (!nome) nome = text;
+          else if (!texto) texto = text;
+        }
+      });
+
+      if (nome) {
+        marcadores.push({ nome, cor, texto });
+      }
+    });
+
+    return marcadores.length > 0 ? marcadores : null;
+  }
+
   function extrairTipoDocumento(nome) {
-    // Tenta identificar o tipo pelo nome do documento
     const tipos = [
       'Ofício', 'Memorando', 'Despacho', 'Portaria', 'Requerimento',
       'Parecer', 'Nota Técnica', 'Relatório', 'Certidão', 'Declaração',
@@ -284,9 +469,7 @@
       'Comunicação', 'Circular', 'Aviso', 'Ordem de Serviço'
     ];
     for (const tipo of tipos) {
-      if (nome.toLowerCase().includes(tipo.toLowerCase())) {
-        return tipo;
-      }
+      if (nome.toLowerCase().includes(tipo.toLowerCase())) return tipo;
     }
     return '';
   }
@@ -319,8 +502,8 @@
         <button class="bm3-close" id="bm3-close-btn">&times;</button>
       </div>
       <div class="bm3-toolbar">
-        <button id="bm3-btn-capturar" class="bm3-primary">Capturar Processos</button>
-        <button id="bm3-btn-capturar-docs" class="bm3-primary" title="Captura processos e busca documentos/anexos de cada um">Capturar + Documentos</button>
+        <button id="bm3-btn-capturar" class="bm3-primary" title="Captura rápida: só dados da tabela">Captura Rápida</button>
+        <button id="bm3-btn-capturar-completo" class="bm3-primary bm3-deep" title="Captura completa: documentos, andamentos, anotações e marcadores">Captura Completa</button>
         <button id="bm3-btn-select-all">Selecionar Todos</button>
         <button id="bm3-btn-copiar" class="bm3-success">Copiar para BM3</button>
         <button id="bm3-btn-exportar-json">Exportar JSON</button>
@@ -342,7 +525,7 @@
     // Event listeners
     document.getElementById('bm3-close-btn').addEventListener('click', togglePanel);
     document.getElementById('bm3-btn-capturar').addEventListener('click', capturarProcessos);
-    document.getElementById('bm3-btn-capturar-docs').addEventListener('click', capturarComDocumentos);
+    document.getElementById('bm3-btn-capturar-completo').addEventListener('click', capturarCompleto);
     document.getElementById('bm3-btn-select-all').addEventListener('click', toggleSelectAll);
     document.getElementById('bm3-btn-copiar').addEventListener('click', copiarParaBM3);
     document.getElementById('bm3-btn-exportar-json').addEventListener('click', exportarJSON);
@@ -376,7 +559,7 @@
     }
   }
 
-  async function capturarComDocumentos() {
+  async function capturarCompleto() {
     capturedProcessos = scrapeProcessos();
     const count = capturedProcessos.length;
 
@@ -386,37 +569,49 @@
     }
 
     document.getElementById('bm3-count').textContent = count;
-    document.getElementById('bm3-info').textContent =
-      `Buscando documentos de ${count} processo(s)... Aguarde.`;
 
-    const btnDocs = document.getElementById('bm3-btn-capturar-docs');
-    btnDocs.disabled = true;
-    btnDocs.textContent = 'Buscando...';
+    const btnDeep = document.getElementById('bm3-btn-capturar-completo');
+    btnDeep.disabled = true;
+    btnDeep.textContent = 'Buscando...';
 
-    let docsTotal = 0;
+    let docsTotal = 0, andTotal = 0;
     for (let i = 0; i < capturedProcessos.length; i++) {
       const proc = capturedProcessos[i];
-      document.getElementById('bm3-info').textContent =
-        `Buscando documentos: ${i + 1}/${count} (${proc.numero})...`;
+      document.getElementById('bm3-info').innerHTML =
+        `<strong>Captura completa:</strong> ${i + 1}/${count} — ${proc.numero}`;
 
-      const docs = await fetchDocumentos(proc.id_procedimento);
-      proc.documentos = docs;
-      docsTotal += docs.length;
+      const dados = await fetchDadosCompletos(proc.id_procedimento);
 
-      // Pequena pausa para não sobrecarregar o servidor
-      if (i < capturedProcessos.length - 1) {
-        await new Promise(r => setTimeout(r, 300));
+      proc.documentos = dados.documentos || [];
+      proc.andamentos = dados.andamentos || [];
+      proc.anotacao_completa = dados.anotacao_completa || proc.anotacao || '';
+      proc.marcador_detalhado = dados.marcador_detalhado || null;
+
+      docsTotal += proc.documentos.length;
+      andTotal += proc.andamentos.length;
+
+      // Buscar conteúdo dos primeiros 10 documentos HTML
+      for (let j = 0; j < Math.min(proc.documentos.length, 10); j++) {
+        const doc = proc.documentos[j];
+        if (doc.id_documento) {
+          document.getElementById('bm3-info').innerHTML =
+            `<strong>${proc.numero}:</strong> Lendo doc ${j + 1}/${proc.documentos.length}...`;
+          doc.conteudo = await fetchConteudoDocumento(doc.id_documento);
+          await sleep(200);
+        }
       }
+
+      await sleep(300);
     }
 
-    btnDocs.disabled = false;
-    btnDocs.textContent = 'Capturar + Documentos';
+    btnDeep.disabled = false;
+    btnDeep.textContent = 'Captura Completa';
 
-    document.getElementById('bm3-info').textContent =
-      `${count} processo(s) capturado(s) com ${docsTotal} documento(s) no total.`;
+    document.getElementById('bm3-info').innerHTML =
+      `<strong>${count}</strong> processo(s) | <strong>${docsTotal}</strong> documento(s) | <strong>${andTotal}</strong> andamento(s)`;
 
     renderProcessList();
-    showToast(`${count} processo(s) com ${docsTotal} documento(s) capturado(s)!`);
+    showToast(`Captura completa: ${count} processos, ${docsTotal} documentos, ${andTotal} andamentos!`);
   }
 
   function renderProcessList() {
@@ -443,11 +638,18 @@
           ${proc.ponto_controle ? `<span class="bm3-proc-tag">PC: ${proc.ponto_controle}</span>` : ''}
           ${proc.nao_lido ? `<span class="bm3-proc-tag" style="background:#e74c3c;color:#fff;">Novo</span>` : ''}
           ${proc.documentos && proc.documentos.length > 0 ? `<span class="bm3-proc-tag docs">${proc.documentos.length} doc(s)</span>` : ''}
+          ${proc.andamentos && proc.andamentos.length > 0 ? `<span class="bm3-proc-tag andamento">${proc.andamentos.length} andamento(s)</span>` : ''}
+          ${proc.anotacao_completa ? `<span class="bm3-proc-tag anotacao">Anotação</span>` : ''}
         </div>
         ${proc.documentos && proc.documentos.length > 0 ? `
         <div class="bm3-proc-docs">
-          ${proc.documentos.slice(0, 5).map(d => `<div class="bm3-doc-item">${d.tipo ? `<strong>${d.tipo}:</strong> ` : ''}${d.nome}</div>`).join('')}
+          ${proc.documentos.slice(0, 5).map(d => `<div class="bm3-doc-item">${d.tipo ? `<strong>${d.tipo}:</strong> ` : ''}${d.nome}${d.conteudo ? ' <em>(com conteúdo)</em>' : ''}</div>`).join('')}
           ${proc.documentos.length > 5 ? `<div class="bm3-doc-item bm3-doc-more">... e mais ${proc.documentos.length - 5} documento(s)</div>` : ''}
+        </div>` : ''}
+        ${proc.andamentos && proc.andamentos.length > 0 ? `
+        <div class="bm3-proc-andamentos">
+          ${proc.andamentos.slice(0, 3).map(a => `<div class="bm3-doc-item">${a.data ? `<strong>${a.data}</strong> — ` : ''}${a.descricao || a.unidade || ''}</div>`).join('')}
+          ${proc.andamentos.length > 3 ? `<div class="bm3-doc-item bm3-doc-more">... e mais ${proc.andamentos.length - 3} andamento(s)</div>` : ''}
         </div>` : ''}
       </div>
     `).join('');
@@ -503,11 +705,10 @@
   }
 
   function formatForBM3(processos) {
-    // Formata no formato que o BM3 app.js parseSEIData() e processPastedData() esperam
     return processos.map(p => ({
       numero: p.numero,
       tipo: p.tipo || p.especificacao || '',
-      interessado: '', // SEI não mostra interessado na tabela principal
+      interessado: '',
       assunto: p.especificacao || '',
       cpf_atribuido: '',
       unidade: p.unidade || '',
@@ -515,7 +716,7 @@
       prioridade: 'normal',
       status: 'pendente',
       prazo: null,
-      anotacoes: p.anotacao || '',
+      anotacoes: p.anotacao_completa || p.anotacao || '',
       observacoes: [
         p.ponto_controle ? `Ponto de Controle: ${p.ponto_controle}` : '',
         p.atribuido ? `Atribuído para: ${p.atribuido}` : '',
@@ -526,8 +727,16 @@
         id_documento: d.id_documento || '',
         nome: d.nome || '',
         tipo: d.tipo || '',
-        descricao: d.descricao || ''
-      }))
+        descricao: d.descricao || '',
+        conteudo: d.conteudo || ''
+      })),
+      andamentos: (p.andamentos || []).map(a => ({
+        data: a.data || '',
+        unidade: a.unidade || '',
+        usuario: a.usuario || '',
+        descricao: a.descricao || ''
+      })),
+      marcador_detalhado: p.marcador_detalhado || null
     }));
   }
 

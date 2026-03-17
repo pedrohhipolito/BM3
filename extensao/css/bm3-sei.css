@@ -298,6 +298,30 @@
   font-style: italic;
 }
 
+/* Andamentos no item do processo */
+.bm3-proc-tag.andamento {
+  background: #d6eaf8;
+  color: #1a5276;
+  font-weight: 600;
+}
+
+.bm3-proc-andamentos {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: #f4f8fb;
+  border-radius: 4px;
+  border-left: 3px solid #2980b9;
+}
+
+/* Botão de captura profunda */
+.bm3-toolbar button.bm3-deep {
+  background: #2980b9;
+  border-color: #2471a3;
+}
+.bm3-toolbar button.bm3-deep:hover {
+  background: #2471a3;
+}
+
 @keyframes bm3FadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }

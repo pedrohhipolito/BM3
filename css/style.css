@@ -738,6 +738,111 @@ body {
     margin-top: 2px;
 }
 
+.doc-conteudo-toggle {
+    margin-top: 6px;
+}
+
+.doc-conteudo-toggle summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--info);
+    font-weight: 500;
+}
+
+.doc-conteudo-toggle summary:hover {
+    text-decoration: underline;
+}
+
+.doc-conteudo {
+    margin-top: 6px;
+    padding: 10px 12px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.82rem;
+    color: var(--text);
+    line-height: 1.5;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* === Andamentos SEI === */
+.detail-andamentos {
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.andamento-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    max-height: 350px;
+    overflow-y: auto;
+}
+
+.andamento-item {
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    border-left: 3px solid var(--info);
+}
+
+.andamento-data {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.andamento-unidade {
+    display: inline-block;
+    background: var(--info-light);
+    color: #1a5276;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-right: 6px;
+}
+
+.andamento-usuario {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.andamento-desc {
+    font-size: 0.85rem;
+    color: var(--text);
+    margin-top: 2px;
+}
+
+/* === Marcador Detalhado === */
+.marcador-detail-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.marcador-cor {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(0,0,0,0.15);
+}
+
+.marcador-texto {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-left: 4px;
+}
+
 /* === Responsive === */
 @media (max-width: 768px) {
     .header { flex-direction: column; gap: 12px; }

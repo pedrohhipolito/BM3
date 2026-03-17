@@ -150,10 +150,11 @@ function getFilteredProcessos() {
         if (prioridade && p.prioridade !== prioridade) return false;
         if (marcador && p.marcador !== marcador) return false;
         if (search) {
+            const docNames = (p.documentos || []).map(d => d.nome).join(' ');
             const haystack = [
                 p.numero, p.tipo, p.interessado, p.assunto,
                 p.cpf_atribuido, p.unidade, p.marcador,
-                p.anotacoes, p.observacoes
+                p.anotacoes, p.observacoes, docNames
             ].filter(Boolean).join(' ').toLowerCase();
             if (!haystack.includes(search)) return false;
         }
@@ -323,6 +324,8 @@ function saveProcesso(e) {
             id: generateId(),
             ...data,
             documentos: [],
+            andamentos: [],
+            marcador_detalhado: null,
             historico: [],
             created_at: now(),
             updated_at: now()
@@ -361,13 +364,19 @@ function renderDocumentos(p) {
     const docs = p.documentos || [];
     if (docs.length === 0) return '';
 
-    const docItems = docs.map(d => `
+    const docItems = docs.map((d, i) => `
         <div class="doc-item">
             <span class="doc-icon">&#128196;</span>
             <div class="doc-info">
                 <div class="doc-nome">${escapeHtml(d.nome)}</div>
                 ${d.tipo ? `<span class="doc-tipo">${escapeHtml(d.tipo)}</span>` : ''}
                 ${d.descricao ? `<div class="doc-descricao">${escapeHtml(d.descricao)}</div>` : ''}
+                ${d.conteudo ? `
+                    <details class="doc-conteudo-toggle">
+                        <summary>Ver conteúdo</summary>
+                        <div class="doc-conteudo">${escapeHtml(d.conteudo).replace(/\n/g, '<br>')}</div>
+                    </details>
+                ` : ''}
             </div>
         </div>
     `).join('');
@@ -378,6 +387,58 @@ function renderDocumentos(p) {
             <div class="doc-list">${docItems}</div>
         </div>
     `;
+}
+
+function renderAndamentos(p) {
+    const andamentos = p.andamentos || [];
+    if (andamentos.length === 0) return '';
+
+    const items = andamentos.map(a => `
+        <div class="andamento-item">
+            ${a.data ? `<div class="andamento-data">${escapeHtml(a.data)}</div>` : ''}
+            <div class="andamento-body">
+                ${a.unidade ? `<span class="andamento-unidade">${escapeHtml(a.unidade)}</span>` : ''}
+                ${a.usuario ? `<span class="andamento-usuario">${escapeHtml(a.usuario)}</span>` : ''}
+                ${a.descricao ? `<div class="andamento-desc">${escapeHtml(a.descricao)}</div>` : ''}
+            </div>
+        </div>
+    `).join('');
+
+    return `
+        <div class="detail-field full-width detail-andamentos">
+            <label>Andamentos do SEI (${andamentos.length})</label>
+            <div class="andamento-list">${items}</div>
+        </div>
+    `;
+}
+
+function renderMarcadorDetalhado(p) {
+    const marcadores = p.marcador_detalhado;
+    if (!marcadores || marcadores.length === 0) return '';
+
+    const items = marcadores.map(m => `
+        <div class="marcador-detail-item">
+            ${m.cor ? `<span class="marcador-cor" style="background:${mapCorMarcador(m.cor)}" title="${escapeHtml(m.cor)}"></span>` : ''}
+            <strong>${escapeHtml(m.nome)}</strong>
+            ${m.texto ? `<span class="marcador-texto">${escapeHtml(m.texto)}</span>` : ''}
+        </div>
+    `).join('');
+
+    return `
+        <div class="detail-field full-width">
+            <label>Marcadores Detalhados</label>
+            <div>${items}</div>
+        </div>
+    `;
+}
+
+function mapCorMarcador(cor) {
+    const cores = {
+        amarelo: '#f1c40f', azul: '#3498db', verde: '#2ecc71',
+        vermelho: '#e74c3c', roxo: '#9b59b6', laranja: '#e67e22',
+        cinza: '#95a5a6', rosa: '#e91e63', branco: '#ecf0f1'
+    };
+    return cores[cor.toLowerCase()] || cor;
 }
 
 function openDetail(id) {
@@ -445,7 +506,9 @@ function openDetail(id) {
                 <label>Atualizado em</label>
                 <div class="value">${p.updated_at ? new Date(p.updated_at).toLocaleString('pt-BR') : '—'}</div>
             </div>
+            ${renderMarcadorDetalhado(p)}
             ${renderDocumentos(p)}
+            ${renderAndamentos(p)}
         </div>
     `;
 
@@ -530,6 +593,8 @@ function importData(file) {
                         anotacoes: item.anotacoes || '',
                         observacoes: item.observacoes || '',
                         documentos: item.documentos || [],
+                        andamentos: item.andamentos || [],
+                        marcador_detalhado: item.marcador_detalhado || null,
                         historico: item.historico || [],
                         created_at: item.created_at || now(),
                         updated_at: now()
@@ -654,6 +719,8 @@ function processPastedData() {
                 anotacoes: item.anotacoes || '',
                 observacoes: item.observacoes || '',
                 documentos: item.documentos || [],
+                andamentos: item.andamentos || [],
+                marcador_detalhado: item.marcador_detalhado || null,
                 historico: [{ data: now(), texto: 'Importado do SEI' }],
                 created_at: now(),
                 updated_at: now()
@@ -832,6 +899,8 @@ function importFromPdf() {
             anotacoes: item.anotacoes || '',
             observacoes: item.observacoes || '',
             documentos: item.documentos || [],
+            andamentos: item.andamentos || [],
+            marcador_detalhado: item.marcador_detalhado || null,
             historico: [{ data: now(), texto: 'Importado via PDF do SEI' }],
             created_at: now(),
             updated_at: now()
