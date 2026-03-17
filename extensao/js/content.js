@@ -163,75 +163,66 @@
     return new Promise(r => setTimeout(r, ms));
   }
 
-  // Fetch uma página SEI mantendo a sessão do usuário
-  async function fetchSEIPage(action, params) {
-    const url = buildSEIUrl(action, params);
+  // Fetch uma URL absoluta do SEI (com cookies da sessão)
+  async function fetchSEIUrl(url) {
     try {
       const resp = await fetch(url, {
         credentials: 'include',
-        redirect: 'follow',
-        headers: {
-          'Accept': 'text/html,application/xhtml+xml',
-          'X-Requested-With': 'XMLHttpRequest'
-        }
+        redirect: 'follow'
       });
+      if (!resp.ok) return null;
 
-      if (!resp.ok) {
-        console.warn('BM3: Fetch falhou', resp.status, url);
+      // Verificar redirect para login
+      if ((resp.url || '').includes('login.php') || (resp.url || '').includes('/sip/')) {
         return null;
       }
 
-      // Verificar se foi redirecionado para login
-      const finalUrl = resp.url || '';
-      if (finalUrl.includes('login.php') || finalUrl.includes('/sip/')) {
-        console.warn('BM3: Redirecionado para login. Tentando via XHR...');
-        return await fetchSEIPageXHR(url);
-      }
-
       const html = await resp.text();
-
-      // Verificar se o HTML é uma página de login
-      if (html.includes('frmLogin') || html.includes('txtUsuario')) {
-        console.warn('BM3: Resposta é página de login. Tentando via XHR...');
-        return await fetchSEIPageXHR(url);
-      }
+      if (html.includes('frmLogin') && html.includes('txtUsuario')) return null;
 
       return new DOMParser().parseFromString(html, 'text/html');
     } catch (err) {
-      console.warn('BM3: Erro no fetch', action, err);
+      console.warn('BM3: Fetch erro:', url, err);
       return null;
     }
   }
 
-  // Fallback: XMLHttpRequest síncrono (envia cookies automaticamente)
-  function fetchSEIPageXHR(url) {
-    return new Promise((resolve) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('GET', url, true);
-      xhr.withCredentials = true;
-      xhr.onload = function() {
-        if (xhr.status === 200) {
-          const html = xhr.responseText;
-          if (html.includes('frmLogin') || html.includes('txtUsuario')) {
-            console.warn('BM3: XHR também retornou login para:', url);
-            resolve(null);
-            return;
-          }
-          resolve(new DOMParser().parseFromString(html, 'text/html'));
-        } else {
-          console.warn('BM3: XHR status', xhr.status);
-          resolve(null);
-        }
-      };
-      xhr.onerror = function() {
-        console.warn('BM3: XHR erro para:', url);
-        resolve(null);
-      };
-      xhr.send();
+  // Fetch uma ação SEI (sem hash — funciona para algumas ações como procedimento_trabalhar)
+  async function fetchSEIPage(action, params) {
+    return await fetchSEIUrl(buildSEIUrl(action, params));
+  }
+
+  // Resolver URL relativa para absoluta no contexto do SEI
+  function resolveUrl(relativeUrl) {
+    if (relativeUrl.startsWith('http')) return relativeUrl;
+    const base = window.location.href.split('controlador.php')[0];
+    return new URL(relativeUrl, base).href;
+  }
+
+  // Extrair URLs assinadas (com infra_hash) de links dentro de uma página SEI
+  function findSignedLinks(doc) {
+    const links = {};
+    doc.querySelectorAll('a[href*="controlador.php"]').forEach(a => {
+      const href = a.getAttribute('href') || '';
+      const acaoMatch = href.match(/acao=([a-z_]+)/);
+      if (acaoMatch) {
+        const acao = acaoMatch[1];
+        if (!links[acao]) links[acao] = [];
+        links[acao].push({
+          url: resolveUrl(href),
+          text: a.textContent.trim().substring(0, 60),
+          hasHash: href.includes('infra_hash')
+        });
+      }
     });
+    return links;
   }
 
   // --- Captura completa de dados de um processo ---
+  // Estratégia:
+  //   1. Buscar procedimento_trabalhar (funciona sem hash)
+  //   2. Extrair iframes internos (ifrArvore = árvore de docs, ifrVisualizacao = viewer)
+  //   3. Buscar links assinados na página para acessar consultar/anotação/marcador
   async function fetchDadosCompletos(idProcedimento, updateStatus) {
     if (!idProcedimento) return {};
 
@@ -246,40 +237,122 @@
       observacao_processo: ''
     };
 
-    // 1. Página principal do processo (árvore de documentos)
+    // 1. Página principal do processo
     if (updateStatus) updateStatus('Abrindo processo...');
-    const docPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
-    if (docPage) {
-      resultado.documentos = extrairDocumentos(docPage);
-      const dadosPrincipal = extrairDadosCadastrais(docPage);
-      Object.assign(resultado, dadosPrincipal);
+    const mainPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
+    if (!mainPage) {
+      console.warn('BM3: Não conseguiu abrir processo', idProcedimento);
+      return resultado;
     }
 
-    // 2. Página de consulta (andamentos + dados cadastrais)
-    if (updateStatus) updateStatus('Lendo andamentos...');
+    // Extrair dados cadastrais que possam estar na página principal
+    const dadosPrincipal = extrairDadosCadastrais(mainPage);
+    Object.assign(resultado, dadosPrincipal);
+
+    // 2. Buscar iframes internos do SEI
+    const iframes = mainPage.querySelectorAll('iframe');
+    let arvoreUrl = null;
+
+    iframes.forEach(iframe => {
+      const src = iframe.getAttribute('src') || '';
+      const id = iframe.getAttribute('id') || '';
+      const name = iframe.getAttribute('name') || '';
+
+      console.log('BM3: iframe encontrado:', { id, name, src: src.substring(0, 120) });
+
+      // ifrArvore = árvore de documentos do processo
+      if (id === 'ifrArvore' || name === 'ifrArvore' || src.includes('arvore') || src.includes('procedimento_trabalhar')) {
+        arvoreUrl = resolveUrl(src);
+      }
+    });
+
+    // 3. Buscar árvore de documentos
+    if (arvoreUrl) {
+      if (updateStatus) updateStatus('Lendo árvore de documentos...');
+      await sleep(300);
+      const arvorePage = await fetchSEIUrl(arvoreUrl);
+      if (arvorePage) {
+        resultado.documentos = extrairDocumentos(arvorePage);
+        console.log('BM3: Documentos da árvore:', resultado.documentos.length);
+
+        // A árvore pode ter dados cadastrais no topo
+        const dadosArvore = extrairDadosCadastrais(arvorePage);
+        if (!resultado.interessado) resultado.interessado = dadosArvore.interessado;
+        if (!resultado.assunto) resultado.assunto = dadosArvore.assunto;
+        if (!resultado.tipo_processo) resultado.tipo_processo = dadosArvore.tipo_processo;
+      }
+    } else {
+      // Fallback: tentar extrair documentos da página principal
+      resultado.documentos = extrairDocumentos(mainPage);
+    }
+
+    // 4. Buscar links assinados para outras ações
+    const signedLinks = findSignedLinks(mainPage);
+    console.log('BM3: Links assinados encontrados:', Object.keys(signedLinks));
+
+    // 4a. Consultar processo (andamentos + dados cadastrais)
+    if (updateStatus) updateStatus('Lendo dados cadastrais...');
     await sleep(300);
-    const andPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
-    if (andPage) {
-      resultado.andamentos = extrairAndamentos(andPage);
-      const dadosCadastrais = extrairDadosCadastrais(andPage);
+
+    // Tentar link assinado primeiro, senão tentar fetch direto
+    let consultarPage = null;
+    if (signedLinks['procedimento_consultar']) {
+      for (const link of signedLinks['procedimento_consultar']) {
+        if (link.hasHash) {
+          consultarPage = await fetchSEIUrl(link.url);
+          if (consultarPage) break;
+        }
+      }
+    }
+    if (!consultarPage) {
+      consultarPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
+    }
+
+    if (consultarPage) {
+      resultado.andamentos = extrairAndamentos(consultarPage);
+      const dadosCadastrais = extrairDadosCadastrais(consultarPage);
       if (!resultado.interessado) resultado.interessado = dadosCadastrais.interessado;
       if (!resultado.assunto) resultado.assunto = dadosCadastrais.assunto;
       if (!resultado.tipo_processo) resultado.tipo_processo = dadosCadastrais.tipo_processo;
       if (!resultado.observacao_processo) resultado.observacao_processo = dadosCadastrais.observacao_processo;
     }
 
-    // 3. Anotações completas
+    // 4b. Anotações
     if (updateStatus) updateStatus('Lendo anotações...');
     await sleep(300);
-    const anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
+
+    let anotPage = null;
+    if (signedLinks['anotacao_registrar']) {
+      for (const link of signedLinks['anotacao_registrar']) {
+        if (link.hasHash) {
+          anotPage = await fetchSEIUrl(link.url);
+          if (anotPage) break;
+        }
+      }
+    }
+    if (!anotPage) {
+      anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
+    }
     if (anotPage) {
       resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
     }
 
-    // 4. Marcador detalhado
+    // 4c. Marcador
     if (updateStatus) updateStatus('Lendo marcadores...');
     await sleep(300);
-    const marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
+
+    let marcPage = null;
+    if (signedLinks['andamento_marcador_gerenciar']) {
+      for (const link of signedLinks['andamento_marcador_gerenciar']) {
+        if (link.hasHash) {
+          marcPage = await fetchSEIUrl(link.url);
+          if (marcPage) break;
+        }
+      }
+    }
+    if (!marcPage) {
+      marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
+    }
     if (marcPage) {
       resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
     }
@@ -288,17 +361,19 @@
   }
 
   // --- Buscar conteúdo de um documento via fetch ---
-  async function fetchConteudoDocumento(idDocumento) {
-    if (!idDocumento) return { texto: '', completo: false, erro: 'Sem ID' };
+  // O documento pode estar:
+  //   a) Direto no HTML (documentos internos do SEI)
+  //   b) Dentro de um iframe ifrVisualizacao (que temos a URL assinada)
+  //   c) Como PDF/imagem (não extraível)
+  async function fetchConteudoDocumento(docUrl) {
+    if (!docUrl) return { texto: '', completo: false, erro: 'Sem URL' };
 
     try {
-      const doc = await fetchSEIPage('documento_visualizar', {
-        id_documento: idDocumento,
-        id_orgao_acesso_externo: 0
-      });
+      const absUrl = resolveUrl(docUrl);
+      const doc = await fetchSEIUrl(absUrl);
       if (!doc) return { texto: '', completo: false, erro: 'Página não carregou ou sessão expirada' };
 
-      // 1. Container específico de conteúdo do SEI
+      // 1. Container de conteúdo do SEI
       const conteudoEl = doc.querySelector(
         '#divConteudo, #divDocumento, .documento-conteudo, .infraAreaTexto, #divVer'
       );
@@ -309,43 +384,32 @@
         }
       }
 
-      // 2. Verificar se tem iframe de visualização (URL do doc real)
-      const iframeEl = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src*="documento"]');
+      // 2. iframe de visualização (tem URL assinada que podemos buscar)
+      const iframeEl = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src]');
       if (iframeEl) {
         const iframeSrc = iframeEl.getAttribute('src') || '';
         if (iframeSrc) {
-          // Se é PDF, não podemos extrair texto
-          if (iframeSrc.includes('.pdf') || iframeSrc.includes('anexo_download') || iframeSrc.includes('tipo=A')) {
+          if (iframeSrc.includes('.pdf') || iframeSrc.includes('anexo_download') || iframeSrc.includes('infra_tipo_arquivo=A')) {
             return { texto: '', completo: false, erro: 'PDF/anexo — não extraível como texto' };
           }
-          // Senão, buscar o conteúdo do iframe via fetch
-          const absUrl = iframeSrc.startsWith('http') ? iframeSrc : new URL(iframeSrc, window.location.href).href;
-          try {
-            const resp2 = await fetch(absUrl, { credentials: 'include' });
-            if (resp2.ok) {
-              const html2 = await resp2.text();
-              if (!html2.includes('frmLogin')) {
-                const doc2 = new DOMParser().parseFromString(html2, 'text/html');
-                const body2 = doc2.querySelector('body');
-                if (body2) {
-                  body2.querySelectorAll('script, style').forEach(el => el.remove());
-                  const texto2 = body2.textContent.trim();
-                  if (texto2.length > 10) {
-                    return { texto: texto2, completo: true, erro: null };
-                  }
-                }
-              }
+
+          // Buscar conteúdo do iframe interno
+          const iframeAbsUrl = resolveUrl(iframeSrc);
+          const docInner = await fetchSEIUrl(iframeAbsUrl);
+          if (docInner && docInner.body) {
+            const clone = docInner.body.cloneNode(true);
+            clone.querySelectorAll('script, style').forEach(el => el.remove());
+            const texto = clone.textContent.trim();
+            if (texto.length > 10) {
+              return { texto, completo: true, erro: null };
             }
-          } catch (e) {
-            // ignore, fallback abaixo
           }
         }
       }
 
-      // 3. Fallback: body inteiro limpando navegação
-      const body = doc.querySelector('body');
-      if (body) {
-        const clone = body.cloneNode(true);
+      // 3. Body inteiro (limpo)
+      if (doc.body) {
+        const clone = doc.body.cloneNode(true);
         clone.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao, #infraMenu').forEach(el => el.remove());
         const texto = clone.textContent.trim();
         if (texto.length > 100) {
@@ -353,15 +417,14 @@
         }
       }
 
-      // 4. Verificar se tem embed de PDF
-      const embed = doc.querySelector('embed[type="application/pdf"], object[type="application/pdf"]');
-      if (embed) {
+      // 4. PDF embutido
+      if (doc.querySelector('embed[type="application/pdf"], object[type="application/pdf"]')) {
         return { texto: '', completo: false, erro: 'PDF embutido — não extraível como texto' };
       }
 
       return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
     } catch (err) {
-      console.warn('BM3: Erro ao buscar documento', idDocumento, err);
+      console.warn('BM3: Erro ao buscar documento', docUrl, err);
       return { texto: '', completo: false, erro: `Erro: ${err.message}` };
     }
   }
@@ -479,23 +542,37 @@
   }
 
   // --- Documentos ---
+  // Extrai lista de documentos de qualquer página do SEI
+  // Captura a URL completa (com hash) para poder buscar o conteúdo depois
   function extrairDocumentos(doc) {
     const documentos = [];
+    const seen = new Set(); // evitar duplicatas
 
-    // Padrão 1: Links de documentos na árvore do SEI
-    const docLinks = doc.querySelectorAll(
-      'a[href*="documento_consultar"], a[href*="protocolo_visualizar"], a[href*="documento_visualizar"]'
-    );
-
-    docLinks.forEach(link => {
-      const texto = link.textContent.trim();
-      if (!texto) return;
-
+    // Buscar TODOS os links que possam ser documentos
+    // O SEI usa vários padrões de ação nos links
+    doc.querySelectorAll('a[href*="controlador.php"]').forEach(link => {
       const href = link.getAttribute('href') || '';
+
+      // Só links que são de documentos
+      if (!href.includes('documento') && !href.includes('protocolo_visualizar') &&
+          !href.includes('editor') && !href.includes('gerar_documento')) return;
+
+      // Ignorar ações de criação/edição
+      if (href.includes('documento_escolher_tipo') || href.includes('documento_gerar') ||
+          href.includes('documento_excluir') || href.includes('documento_cancelar')) return;
+
+      const texto = link.textContent.trim();
+      if (!texto || texto.length < 2) return;
+
       const params = getParamsFromUrl(href);
       const idDoc = params.id_documento || params.id_protocolo || '';
+      const key = idDoc || texto;
+      if (seen.has(key)) return;
+      seen.add(key);
+
       const tooltip = extractTooltipText(link.getAttribute('onmouseover') || '');
 
+      // Tipo do documento (do ícone ou do texto)
       const img = link.querySelector('img') || link.previousElementSibling;
       let tipoDoc = '';
       if (img && img.getAttribute) {
@@ -507,57 +584,41 @@
         nome: texto,
         tipo: tipoDoc || extrairTipoDocumento(texto),
         descricao: tooltip,
-        conteudo: '' // será preenchido depois se solicitado
+        url: href, // URL completa com hash para fetch posterior
+        conteudo: ''
       });
     });
 
-    // Padrão 2: Tabela de documentos
+    // Fallback: links genéricos em árvore
     if (documentos.length === 0) {
-      const tabelasDocs = doc.querySelectorAll('table[id*="documento"], table[id*="Documento"]');
-      tabelasDocs.forEach(tabela => {
-        tabela.querySelectorAll('tr').forEach(row => {
-          const tds = row.querySelectorAll('td');
-          if (tds.length < 2) return;
-          const link = row.querySelector('a');
-          if (!link) return;
-
-          const nome = link.textContent.trim();
-          const href = link.getAttribute('href') || '';
-          const params = getParamsFromUrl(href);
-
-          let tipoDoc = '', dataDoc = '';
-          tds.forEach(td => {
-            const text = td.textContent.trim();
-            if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) dataDoc = text;
-            else if (text !== nome && text.length > 2 && text.length < 60 && !tipoDoc) tipoDoc = text;
-          });
-
-          documentos.push({
-            id_documento: params.id_documento || params.id_protocolo || '',
-            nome, tipo: tipoDoc || extrairTipoDocumento(nome),
-            descricao: dataDoc ? `Data: ${dataDoc}` : '',
-            conteudo: ''
-          });
-        });
-      });
-    }
-
-    // Padrão 3: Árvore genérica
-    if (documentos.length === 0) {
-      doc.querySelectorAll('[class*="arvore"] a, [id*="arvore"] a, [class*="tree"] a').forEach(link => {
+      doc.querySelectorAll('a').forEach(link => {
+        const href = link.getAttribute('href') || '';
         const texto = link.textContent.trim();
         if (!texto || texto.length < 3) return;
-        const href = link.getAttribute('href') || '';
-        if (!href.includes('documento') && !href.includes('protocolo')) return;
-        const params = getParamsFromUrl(href);
-        documentos.push({
-          id_documento: params.id_documento || params.id_protocolo || '',
-          nome: texto, tipo: extrairTipoDocumento(texto),
-          descricao: '', conteudo: ''
-        });
+
+        // Verificar pelo onclick/onmouseover que pareça ser documento
+        const onclick = link.getAttribute('onclick') || '';
+        if (onclick.includes('documento') || onclick.includes('abrirArvore') ||
+            href.includes('documento') || href.includes('protocolo')) {
+          const params = getParamsFromUrl(href);
+          const idDoc = params.id_documento || params.id_protocolo || '';
+          const key = idDoc || texto;
+          if (seen.has(key)) return;
+          seen.add(key);
+
+          documentos.push({
+            id_documento: idDoc,
+            nome: texto,
+            tipo: extrairTipoDocumento(texto),
+            descricao: '',
+            url: href,
+            conteudo: ''
+          });
+        }
       });
     }
 
+    console.log('BM3: extrairDocumentos encontrou', documentos.length, 'docs');
     return documentos;
   }
 
@@ -813,99 +874,99 @@
     const url1 = buildSEIUrl('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
     console.log('   URL:', url1);
 
-    try {
-      // Teste A: fetch com credentials include
-      const respA = await fetch(url1, { credentials: 'include', redirect: 'follow' });
-      console.log('   Fetch (include) status:', respA.status, 'URL final:', respA.url);
-      const htmlA = await respA.text();
-      console.log('   Resposta tem login?', htmlA.includes('frmLogin'));
-      console.log('   HTML length:', htmlA.length);
-      console.log('   Primeiros 3000 chars:', htmlA.substring(0, 3000));
+    const mainPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
+    if (!mainPage) {
+      console.log('   FALHA: fetch retornou null (login ou erro)');
+      console.groupEnd();
+      infoEl.innerHTML = '<span style="color:red">Diagnóstico: não conseguiu acessar o processo. Sessão expirada?</span>';
+      return;
+    }
 
-      if (!htmlA.includes('frmLogin')) {
-        const doc1 = new DOMParser().parseFromString(htmlA, 'text/html');
-        console.log('   Title:', doc1.title);
+    console.log('   Fetch OK! Title:', mainPage.title);
+    console.log('   Body length:', mainPage.body?.innerHTML?.length);
 
-        // Verificar seletores de documentos
-        const links1 = doc1.querySelectorAll('a[href*="documento_consultar"]');
-        const links2 = doc1.querySelectorAll('a[href*="protocolo_visualizar"]');
-        const links3 = doc1.querySelectorAll('a[href*="documento_visualizar"]');
-        console.log('   Links documento_consultar:', links1.length);
-        console.log('   Links protocolo_visualizar:', links2.length);
-        console.log('   Links documento_visualizar:', links3.length);
-        console.log('   Todos os links <a>:', Array.from(doc1.querySelectorAll('a')).slice(0, 30).map(a => ({
-          text: a.textContent.trim().substring(0, 60),
-          href: (a.getAttribute('href') || '').substring(0, 120)
-        })));
-        console.log('   IFrames:', Array.from(doc1.querySelectorAll('iframe')).map(f => ({
-          id: f.id, name: f.name, src: (f.getAttribute('src') || '').substring(0, 120)
-        })));
+    // 3a. Iframes na página principal
+    const iframesInfo = Array.from(mainPage.querySelectorAll('iframe')).map(f => ({
+      id: f.id || '(sem id)', name: f.name || '(sem name)', src: (f.getAttribute('src') || '').substring(0, 150)
+    }));
+    console.log('   IFrames encontrados:', iframesInfo.length, iframesInfo);
 
-        const docs = extrairDocumentos(doc1);
-        console.log('   Documentos extraídos:', docs.length, docs);
+    // 3b. Links assinados
+    const signedLinks = findSignedLinks(mainPage);
+    console.log('   Links assinados por ação:', Object.entries(signedLinks).map(([k, v]) => `${k}: ${v.length}`));
+    for (const [acao, links] of Object.entries(signedLinks)) {
+      console.log(`   ${acao}:`, links.slice(0, 3));
+    }
+
+    // 3c. Documentos extraídos da página principal
+    const docsMain = extrairDocumentos(mainPage);
+    console.log('   Documentos na página principal:', docsMain.length, docsMain.slice(0, 5));
+
+    // 4. Buscar ifrArvore (árvore de documentos)
+    console.log('\n4. BUSCAR IFRAME DA ÁRVORE');
+    let arvoreUrl = null;
+    mainPage.querySelectorAll('iframe').forEach(iframe => {
+      const src = iframe.getAttribute('src') || '';
+      const id = iframe.getAttribute('id') || '';
+      if (id === 'ifrArvore' || src.includes('arvore') || id.includes('rvore')) {
+        arvoreUrl = resolveUrl(src);
+      }
+    });
+
+    if (arvoreUrl) {
+      console.log('   URL da árvore:', arvoreUrl);
+      infoEl.innerHTML = '<strong>Diagnóstico:</strong> Buscando árvore de documentos...';
+      await sleep(300);
+      const arvorePage = await fetchSEIUrl(arvoreUrl);
+      if (arvorePage) {
+        console.log('   Árvore carregou OK! Body:', arvorePage.body?.innerHTML?.length, 'chars');
+        console.log('   Primeiros 3000 chars:', arvorePage.body?.innerHTML?.substring(0, 3000));
+
+        const docsArvore = extrairDocumentos(arvorePage);
+        console.log('   Documentos da árvore:', docsArvore.length, docsArvore);
+
+        // Dados cadastrais na árvore
+        const dadosArvore = extrairDadosCadastrais(arvorePage);
+        console.log('   Dados cadastrais da árvore:', dadosArvore);
       } else {
-        console.log('   PROBLEMA: fetch retornou página de login!');
-        console.log('   Testando XHR como fallback...');
-        const xhrResult = await fetchSEIPageXHR(url1);
-        if (xhrResult) {
-          console.log('   XHR funcionou! Body length:', xhrResult.body?.innerHTML?.length);
-          console.log('   XHR primeiros 2000:', xhrResult.body?.innerHTML?.substring(0, 2000));
+        console.log('   FALHA: árvore retornou null (login?)');
+      }
+    } else {
+      console.log('   Nenhum iframe de árvore encontrado');
+      console.log('   Tentando extrair docs da página principal...');
+    }
+
+    // 5. Testar link assinado para procedimento_consultar
+    console.log('\n5. TESTAR LINK ASSINADO — procedimento_consultar');
+    if (signedLinks['procedimento_consultar']) {
+      const hashLink = signedLinks['procedimento_consultar'].find(l => l.hasHash);
+      if (hashLink) {
+        console.log('   Usando link assinado:', hashLink.url.substring(0, 150));
+        infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando consulta via link assinado...';
+        await sleep(300);
+        const consultPage = await fetchSEIUrl(hashLink.url);
+        if (consultPage) {
+          console.log('   Consulta carregou OK!');
+          const cadastrais = extrairDadosCadastrais(consultPage);
+          console.log('   Dados cadastrais:', cadastrais);
+          const andamentos = extrairAndamentos(consultPage);
+          console.log('   Andamentos:', andamentos.length, andamentos.slice(0, 3));
         } else {
-          console.log('   XHR também retornou login.');
+          console.log('   FALHA: consulta retornou null');
         }
-      }
-    } catch (e) {
-      console.log('   Fetch erro:', e.message);
-    }
-
-    // 4. Testar FETCH — procedimento_consultar
-    console.log('\n4. TESTE FETCH — procedimento_consultar');
-    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando consulta de ' + proc.numero + '...';
-    await sleep(500);
-
-    const url2 = buildSEIUrl('procedimento_consultar', { id_procedimento: proc.id_procedimento });
-    console.log('   URL:', url2);
-
-    try {
-      const respB = await fetch(url2, { credentials: 'include', redirect: 'follow' });
-      console.log('   Fetch status:', respB.status, 'URL final:', respB.url);
-      const htmlB = await respB.text();
-      console.log('   Resposta tem login?', htmlB.includes('frmLogin'));
-      console.log('   HTML length:', htmlB.length);
-
-      if (!htmlB.includes('frmLogin')) {
-        const doc2 = new DOMParser().parseFromString(htmlB, 'text/html');
-        console.log('   Title:', doc2.title);
-        console.log('   Primeiros 3000 chars:', htmlB.substring(0, 3000));
-
-        // Labels e dados
-        const labels = doc2.querySelectorAll('td, th, label, span');
-        const labelTexts = Array.from(labels).map(l => l.textContent.trim()).filter(t => t.length > 0 && t.length < 100);
-        console.log('   Labels/TDs/Spans:', labelTexts.slice(0, 50));
-
-        const tabelas = doc2.querySelectorAll('table');
-        console.log('   Tabelas:', tabelas.length);
-        tabelas.forEach((t, i) => {
-          console.log(`   Tabela ${i}: id="${t.id}", class="${t.className}", rows=${t.rows?.length || 0}`);
-        });
-
-        const cadastrais = extrairDadosCadastrais(doc2);
-        console.log('   Dados cadastrais:', cadastrais);
-        const andamentos = extrairAndamentos(doc2);
-        console.log('   Andamentos:', andamentos.length, andamentos.slice(0, 3));
       } else {
-        console.log('   PROBLEMA: fetch retornou login!');
-        console.log('   Primeiros 1000 chars:', htmlB.substring(0, 1000));
+        console.log('   Sem link assinado para procedimento_consultar');
       }
-    } catch (e) {
-      console.log('   Fetch erro:', e.message);
+    } else {
+      console.log('   Nenhum link para procedimento_consultar encontrado');
     }
 
-    // 5. Resumo
-    console.log('\n5. RESUMO');
-    console.log('   Se fetch retorna login = cookies/sessão não são enviados pelo fetch');
-    console.log('   Se fetch funciona mas dados vazios = seletores errados (cole HTML aqui)');
-    console.log('   Se fetch funciona e tem dados = captura completa deve funcionar!');
+    // 6. Resumo
+    console.log('\n6. RESUMO');
+    console.log('   Iframes:', iframesInfo.length);
+    console.log('   Ações assinadas:', Object.keys(signedLinks).join(', '));
+    console.log('   Docs na main:', docsMain.length);
+    console.log('   Árvore URL:', arvoreUrl ? 'SIM' : 'NÃO');
     console.groupEnd();
 
     infoEl.innerHTML = '<strong>Diagnóstico completo!</strong> Abra <strong>F12 > Console</strong> e cole o resultado aqui.';
@@ -970,15 +1031,16 @@
       docsTotal += proc.documentos.length;
       andTotal += proc.andamentos.length;
 
-      // Buscar conteúdo de TODOS os documentos via iframe
+      // Buscar conteúdo de TODOS os documentos
       for (let j = 0; j < proc.documentos.length; j++) {
         const docItem = proc.documentos[j];
-        if (docItem.id_documento) {
+        const docUrl = docItem.url || (docItem.id_documento ? buildSEIUrl('documento_visualizar', { id_documento: docItem.id_documento }) : '');
+        if (docUrl) {
           infoEl.innerHTML =
             `<strong>${procLabel}</strong><br>` +
             `<em>Lendo documento ${j + 1}/${proc.documentos.length}: ${docItem.nome}</em>`;
 
-          const resultado = await fetchConteudoDocumento(docItem.id_documento);
+          const resultado = await fetchConteudoDocumento(docUrl);
           docItem.conteudo = resultado.texto;
           docItem.conteudo_completo = resultado.completo;
           docItem.conteudo_erro = resultado.erro;
