@@ -129,6 +129,17 @@
       ? (document.querySelector('#lnkInfraUnidade')?.textContent?.trim() || '')
       : (document.querySelector('#selInfraUnidades option:checked')?.textContent?.trim() || '');
 
+    // Capturar TODAS as URLs de ação da linha (já vêm assinadas com infra_hash)
+    const actionUrls = {};
+    row.querySelectorAll('a[href*="controlador.php"]').forEach(a => {
+      const aHref = a.getAttribute('href') || '';
+      const acaoMatch = aHref.match(/acao=([a-z_]+)/);
+      if (acaoMatch && aHref.includes('infra_hash')) {
+        const acao = acaoMatch[1];
+        if (!actionUrls[acao]) actionUrls[acao] = resolveUrl(aHref);
+      }
+    });
+
     return {
       numero,
       id_procedimento: idProcedimento,
@@ -140,7 +151,8 @@
       ponto_controle: pontoControle,
       nao_lido: isNaoLido,
       data_recebimento: dataRecebimento,
-      unidade
+      unidade,
+      actionUrls // URLs assinadas para consultar, anotação, marcador, etc.
     };
   }
 
@@ -220,10 +232,9 @@
 
   // --- Captura completa de dados de um processo ---
   // Estratégia:
-  //   1. Buscar procedimento_trabalhar (funciona sem hash)
-  //   2. Extrair iframes internos (ifrArvore = árvore de docs, ifrVisualizacao = viewer)
-  //   3. Buscar links assinados na página para acessar consultar/anotação/marcador
-  async function fetchDadosCompletos(idProcedimento, updateStatus) {
+  //   1. Buscar procedimento_trabalhar (funciona sem hash) → documentos
+  //   2. Usar URLs assinadas da tabela da página atual → consultar, anotação, marcador
+  async function fetchDadosCompletos(idProcedimento, updateStatus, actionUrls) {
     if (!idProcedimento) return {};
 
     const resultado = {
@@ -237,124 +248,76 @@
       observacao_processo: ''
     };
 
-    // 1. Página principal do processo
+    actionUrls = actionUrls || {};
+    console.log('BM3: actionUrls do processo:', Object.keys(actionUrls));
+
+    // 1. Página principal do processo (documentos)
     if (updateStatus) updateStatus('Abrindo processo...');
     const mainPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
-    if (!mainPage) {
-      console.warn('BM3: Não conseguiu abrir processo', idProcedimento);
-      return resultado;
-    }
-
-    // Extrair dados cadastrais que possam estar na página principal
-    const dadosPrincipal = extrairDadosCadastrais(mainPage);
-    Object.assign(resultado, dadosPrincipal);
-
-    // 2. Buscar iframes internos do SEI
-    const iframes = mainPage.querySelectorAll('iframe');
-    let arvoreUrl = null;
-
-    iframes.forEach(iframe => {
-      const src = iframe.getAttribute('src') || '';
-      const id = iframe.getAttribute('id') || '';
-      const name = iframe.getAttribute('name') || '';
-
-      console.log('BM3: iframe encontrado:', { id, name, src: src.substring(0, 120) });
-
-      // ifrArvore = árvore de documentos do processo
-      if (id === 'ifrArvore' || name === 'ifrArvore' || src.includes('arvore') || src.includes('procedimento_trabalhar')) {
-        arvoreUrl = resolveUrl(src);
-      }
-    });
-
-    // 3. Buscar árvore de documentos
-    if (arvoreUrl) {
-      if (updateStatus) updateStatus('Lendo árvore de documentos...');
-      await sleep(300);
-      const arvorePage = await fetchSEIUrl(arvoreUrl);
-      if (arvorePage) {
-        resultado.documentos = extrairDocumentos(arvorePage);
-        console.log('BM3: Documentos da árvore:', resultado.documentos.length);
-
-        // A árvore pode ter dados cadastrais no topo
-        const dadosArvore = extrairDadosCadastrais(arvorePage);
-        if (!resultado.interessado) resultado.interessado = dadosArvore.interessado;
-        if (!resultado.assunto) resultado.assunto = dadosArvore.assunto;
-        if (!resultado.tipo_processo) resultado.tipo_processo = dadosArvore.tipo_processo;
-      }
-    } else {
-      // Fallback: tentar extrair documentos da página principal
+    if (mainPage) {
+      // Extrair documentos da página principal (6 encontrados no diagnóstico!)
       resultado.documentos = extrairDocumentos(mainPage);
-    }
+      console.log('BM3: Documentos da página principal:', resultado.documentos.length);
 
-    // 4. Buscar links assinados para outras ações
-    const signedLinks = findSignedLinks(mainPage);
-    console.log('BM3: Links assinados encontrados:', Object.keys(signedLinks));
+      // Dados cadastrais da página principal
+      const dadosPrincipal = extrairDadosCadastrais(mainPage);
+      Object.assign(resultado, dadosPrincipal);
 
-    // 4a. Consultar processo (andamentos + dados cadastrais)
-    if (updateStatus) updateStatus('Lendo dados cadastrais...');
-    await sleep(300);
+      // Buscar links assinados DENTRO da página principal também
+      const mainLinks = findSignedLinks(mainPage);
 
-    // Tentar link assinado primeiro, senão tentar fetch direto
-    let consultarPage = null;
-    if (signedLinks['procedimento_consultar']) {
-      for (const link of signedLinks['procedimento_consultar']) {
-        if (link.hasHash) {
-          consultarPage = await fetchSEIUrl(link.url);
-          if (consultarPage) break;
+      // Complementar actionUrls com links da página principal
+      for (const [acao, links] of Object.entries(mainLinks)) {
+        if (!actionUrls[acao]) {
+          const hashLink = links.find(l => l.hasHash);
+          if (hashLink) actionUrls[acao] = hashLink.url;
         }
       }
     }
-    if (!consultarPage) {
-      consultarPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
+
+    // 2. Consultar processo (andamentos + dados cadastrais) — via URL assinada
+    if (updateStatus) updateStatus('Lendo andamentos...');
+    await sleep(300);
+
+    const consultarUrl = actionUrls['procedimento_consultar'];
+    if (consultarUrl) {
+      console.log('BM3: Usando URL assinada para consultar:', consultarUrl.substring(0, 100));
+      const consultarPage = await fetchSEIUrl(consultarUrl);
+      if (consultarPage) {
+        resultado.andamentos = extrairAndamentos(consultarPage);
+        const dados = extrairDadosCadastrais(consultarPage);
+        if (!resultado.interessado) resultado.interessado = dados.interessado;
+        if (!resultado.assunto) resultado.assunto = dados.assunto;
+        if (!resultado.tipo_processo) resultado.tipo_processo = dados.tipo_processo;
+        if (!resultado.observacao_processo) resultado.observacao_processo = dados.observacao_processo;
+        console.log('BM3: Andamentos:', resultado.andamentos.length, 'Cadastrais:', dados);
+      }
+    } else {
+      console.log('BM3: Sem URL assinada para procedimento_consultar');
     }
 
-    if (consultarPage) {
-      resultado.andamentos = extrairAndamentos(consultarPage);
-      const dadosCadastrais = extrairDadosCadastrais(consultarPage);
-      if (!resultado.interessado) resultado.interessado = dadosCadastrais.interessado;
-      if (!resultado.assunto) resultado.assunto = dadosCadastrais.assunto;
-      if (!resultado.tipo_processo) resultado.tipo_processo = dadosCadastrais.tipo_processo;
-      if (!resultado.observacao_processo) resultado.observacao_processo = dadosCadastrais.observacao_processo;
-    }
-
-    // 4b. Anotações
+    // 3. Anotações — via URL assinada
     if (updateStatus) updateStatus('Lendo anotações...');
     await sleep(300);
 
-    let anotPage = null;
-    if (signedLinks['anotacao_registrar']) {
-      for (const link of signedLinks['anotacao_registrar']) {
-        if (link.hasHash) {
-          anotPage = await fetchSEIUrl(link.url);
-          if (anotPage) break;
-        }
+    const anotUrl = actionUrls['anotacao_registrar'];
+    if (anotUrl) {
+      const anotPage = await fetchSEIUrl(anotUrl);
+      if (anotPage) {
+        resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
       }
     }
-    if (!anotPage) {
-      anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
-    }
-    if (anotPage) {
-      resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
-    }
 
-    // 4c. Marcador
+    // 4. Marcador — via URL assinada
     if (updateStatus) updateStatus('Lendo marcadores...');
     await sleep(300);
 
-    let marcPage = null;
-    if (signedLinks['andamento_marcador_gerenciar']) {
-      for (const link of signedLinks['andamento_marcador_gerenciar']) {
-        if (link.hasHash) {
-          marcPage = await fetchSEIUrl(link.url);
-          if (marcPage) break;
-        }
+    const marcUrl = actionUrls['andamento_marcador_gerenciar'];
+    if (marcUrl) {
+      const marcPage = await fetchSEIUrl(marcUrl);
+      if (marcPage) {
+        resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
       }
-    }
-    if (!marcPage) {
-      marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
-    }
-    if (marcPage) {
-      resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
     }
 
     return resultado;
@@ -861,116 +824,85 @@
     const proc = processos[0];
     console.log('   Primeiro processo:', JSON.stringify(proc, null, 2));
 
-    // 2. Verificar cookies e sessão
-    console.log('\n2. COOKIES E SESSÃO');
-    console.log('   document.cookie:', document.cookie || '(vazio)');
-    console.log('   window === window.top:', window === window.top);
-    console.log('   location.href:', window.location.href);
+    // 2. ActionUrls capturadas da tabela (links assinados da linha do processo)
+    console.log('\n2. URLs ASSINADAS DA TABELA');
+    console.log('   actionUrls:', proc.actionUrls || '(nenhuma)');
+
+    // Mostrar TODOS os links da primeira linha para debug
+    const firstRow = document.querySelector('a[href*="procedimento_trabalhar"]')?.closest('tr');
+    if (firstRow) {
+      const allRowLinks = Array.from(firstRow.querySelectorAll('a[href*="controlador.php"]')).map(a => ({
+        acao: (a.getAttribute('href') || '').match(/acao=([a-z_]+)/)?.[1] || '?',
+        text: a.textContent.trim().substring(0, 40),
+        hasHash: (a.getAttribute('href') || '').includes('infra_hash'),
+        href: (a.getAttribute('href') || '').substring(0, 150)
+      }));
+      console.log('   Todos os links da 1ª linha da tabela:', allRowLinks);
+    }
 
     // 3. Testar FETCH — procedimento_trabalhar
-    console.log('\n3. TESTE FETCH — procedimento_trabalhar');
+    console.log('\n3. FETCH procedimento_trabalhar');
     infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando fetch com ' + proc.numero + '...';
-
-    const url1 = buildSEIUrl('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
-    console.log('   URL:', url1);
 
     const mainPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
     if (!mainPage) {
-      console.log('   FALHA: fetch retornou null (login ou erro)');
+      console.log('   FALHA: fetch retornou null');
       console.groupEnd();
-      infoEl.innerHTML = '<span style="color:red">Diagnóstico: não conseguiu acessar o processo. Sessão expirada?</span>';
+      infoEl.innerHTML = '<span style="color:red">Sessão expirada?</span>';
       return;
     }
 
-    console.log('   Fetch OK! Title:', mainPage.title);
-    console.log('   Body length:', mainPage.body?.innerHTML?.length);
+    console.log('   OK! Title:', mainPage.title, 'Body:', mainPage.body?.innerHTML?.length, 'chars');
 
-    // 3a. Iframes na página principal
-    const iframesInfo = Array.from(mainPage.querySelectorAll('iframe')).map(f => ({
-      id: f.id || '(sem id)', name: f.name || '(sem name)', src: (f.getAttribute('src') || '').substring(0, 150)
-    }));
-    console.log('   IFrames encontrados:', iframesInfo.length, iframesInfo);
-
-    // 3b. Links assinados
-    const signedLinks = findSignedLinks(mainPage);
-    console.log('   Links assinados por ação:', Object.entries(signedLinks).map(([k, v]) => `${k}: ${v.length}`));
-    for (const [acao, links] of Object.entries(signedLinks)) {
-      console.log(`   ${acao}:`, links.slice(0, 3));
-    }
-
-    // 3c. Documentos extraídos da página principal
+    // 3a. Documentos extraídos da página principal
     const docsMain = extrairDocumentos(mainPage);
-    console.log('   Documentos na página principal:', docsMain.length, docsMain.slice(0, 5));
+    console.log('   Documentos:', docsMain.length);
+    docsMain.forEach((d, i) => console.log(`   Doc ${i}:`, d.nome, '| id:', d.id_documento, '| url:', (d.url || '').substring(0, 120)));
 
-    // 4. Buscar ifrArvore (árvore de documentos)
-    console.log('\n4. BUSCAR IFRAME DA ÁRVORE');
-    let arvoreUrl = null;
-    mainPage.querySelectorAll('iframe').forEach(iframe => {
-      const src = iframe.getAttribute('src') || '';
-      const id = iframe.getAttribute('id') || '';
-      if (id === 'ifrArvore' || src.includes('arvore') || id.includes('rvore')) {
-        arvoreUrl = resolveUrl(src);
-      }
-    });
+    // 4. Testar captura completa com actionUrls
+    console.log('\n4. TESTE CAPTURA COMPLETA');
+    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando captura completa...';
 
-    if (arvoreUrl) {
-      console.log('   URL da árvore:', arvoreUrl);
-      infoEl.innerHTML = '<strong>Diagnóstico:</strong> Buscando árvore de documentos...';
-      await sleep(300);
-      const arvorePage = await fetchSEIUrl(arvoreUrl);
-      if (arvorePage) {
-        console.log('   Árvore carregou OK! Body:', arvorePage.body?.innerHTML?.length, 'chars');
-        console.log('   Primeiros 3000 chars:', arvorePage.body?.innerHTML?.substring(0, 3000));
+    const dados = await fetchDadosCompletos(proc.id_procedimento, (s) => {
+      console.log('   Status:', s);
+      infoEl.innerHTML = '<strong>Diagnóstico:</strong> ' + s;
+    }, proc.actionUrls);
 
-        const docsArvore = extrairDocumentos(arvorePage);
-        console.log('   Documentos da árvore:', docsArvore.length, docsArvore);
+    console.log('\n5. RESULTADO DA CAPTURA');
+    console.log('   Documentos:', dados.documentos?.length || 0);
+    dados.documentos?.forEach((d, i) => console.log(`   Doc ${i}: ${d.nome} | tipo: ${d.tipo} | url: ${(d.url || '').substring(0, 80)}`));
+    console.log('   Andamentos:', dados.andamentos?.length || 0);
+    dados.andamentos?.slice(0, 3).forEach((a, i) => console.log(`   And ${i}:`, a));
+    console.log('   Interessado:', dados.interessado);
+    console.log('   Assunto:', dados.assunto);
+    console.log('   Tipo processo:', dados.tipo_processo);
+    console.log('   Anotação:', dados.anotacao_completa?.substring(0, 200));
+    console.log('   Marcador:', dados.marcador_detalhado);
 
-        // Dados cadastrais na árvore
-        const dadosArvore = extrairDadosCadastrais(arvorePage);
-        console.log('   Dados cadastrais da árvore:', dadosArvore);
+    // 6. Testar fetch de 1 documento
+    if (dados.documentos?.length > 0) {
+      console.log('\n6. TESTE FETCH DOCUMENTO');
+      const doc1 = dados.documentos[0];
+      const docUrl = doc1.url || '';
+      console.log('   Buscando:', doc1.nome, '| URL:', docUrl.substring(0, 120));
+      infoEl.innerHTML = '<strong>Diagnóstico:</strong> Buscando documento ' + doc1.nome + '...';
+
+      if (docUrl) {
+        const conteudo = await fetchConteudoDocumento(docUrl);
+        console.log('   Resultado:', {
+          completo: conteudo.completo,
+          erro: conteudo.erro,
+          tamanho: conteudo.texto?.length || 0,
+          preview: conteudo.texto?.substring(0, 500) || '(vazio)'
+        });
       } else {
-        console.log('   FALHA: árvore retornou null (login?)');
+        console.log('   Sem URL para buscar');
       }
-    } else {
-      console.log('   Nenhum iframe de árvore encontrado');
-      console.log('   Tentando extrair docs da página principal...');
     }
 
-    // 5. Testar link assinado para procedimento_consultar
-    console.log('\n5. TESTAR LINK ASSINADO — procedimento_consultar');
-    if (signedLinks['procedimento_consultar']) {
-      const hashLink = signedLinks['procedimento_consultar'].find(l => l.hasHash);
-      if (hashLink) {
-        console.log('   Usando link assinado:', hashLink.url.substring(0, 150));
-        infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando consulta via link assinado...';
-        await sleep(300);
-        const consultPage = await fetchSEIUrl(hashLink.url);
-        if (consultPage) {
-          console.log('   Consulta carregou OK!');
-          const cadastrais = extrairDadosCadastrais(consultPage);
-          console.log('   Dados cadastrais:', cadastrais);
-          const andamentos = extrairAndamentos(consultPage);
-          console.log('   Andamentos:', andamentos.length, andamentos.slice(0, 3));
-        } else {
-          console.log('   FALHA: consulta retornou null');
-        }
-      } else {
-        console.log('   Sem link assinado para procedimento_consultar');
-      }
-    } else {
-      console.log('   Nenhum link para procedimento_consultar encontrado');
-    }
-
-    // 6. Resumo
-    console.log('\n6. RESUMO');
-    console.log('   Iframes:', iframesInfo.length);
-    console.log('   Ações assinadas:', Object.keys(signedLinks).join(', '));
-    console.log('   Docs na main:', docsMain.length);
-    console.log('   Árvore URL:', arvoreUrl ? 'SIM' : 'NÃO');
     console.groupEnd();
-
-    infoEl.innerHTML = '<strong>Diagnóstico completo!</strong> Abra <strong>F12 > Console</strong> e cole o resultado aqui.';
-    showToast('Diagnóstico concluído! Abra F12 > Console, copie tudo e cole aqui.', false);
+    infoEl.innerHTML = '<strong>Diagnóstico completo!</strong> Abra <strong>F12 > Console</strong> e cole o resultado.';
+    showToast('Diagnóstico concluído!', false);
   }
 
   function capturarProcessos() {
@@ -1017,7 +949,7 @@
 
       const dados = await fetchDadosCompletos(proc.id_procedimento, (status) => {
         infoEl.innerHTML = `<strong>${procLabel}</strong><br><em>${status}</em>`;
-      });
+      }, proc.actionUrls);
 
       proc.documentos = dados.documentos || [];
       proc.andamentos = dados.andamentos || [];
