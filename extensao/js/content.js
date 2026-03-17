@@ -145,7 +145,9 @@
   }
 
   // ============================================================
-  // Scraping Profundo: Captura dados completos do processo
+  // Scraping Profundo via IFRAME INVISÍVEL
+  // Carrega cada página SEI em um iframe oculto para usar
+  // a sessão real do usuário e renderização completa do navegador
   // ============================================================
 
   function buildSEIUrl(action, params) {
@@ -157,21 +159,79 @@
     return base + '?' + queryParts.join('&');
   }
 
-  async function fetchSEIPage(action, params) {
-    try {
-      const url = buildSEIUrl(action, params);
-      const resp = await fetch(url, { credentials: 'same-origin' });
-      if (!resp.ok) return null;
-      const html = await resp.text();
-      return new DOMParser().parseFromString(html, 'text/html');
-    } catch (err) {
-      console.warn('BM3: Erro ao buscar página SEI', action, err);
-      return null;
+  // Iframe reutilizável — criado uma vez, reutilizado em todas as capturas
+  let _iframeBM3 = null;
+
+  function getIframe() {
+    if (_iframeBM3 && _iframeBM3.parentNode) return _iframeBM3;
+    _iframeBM3 = document.createElement('iframe');
+    _iframeBM3.id = 'bm3-scraper-iframe';
+    _iframeBM3.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(_iframeBM3);
+    return _iframeBM3;
+  }
+
+  function destroyIframe() {
+    if (_iframeBM3 && _iframeBM3.parentNode) {
+      _iframeBM3.parentNode.removeChild(_iframeBM3);
     }
+    _iframeBM3 = null;
+  }
+
+  // Carrega uma URL no iframe e retorna o document quando pronto
+  function loadPageInIframe(url, timeoutMs = 15000) {
+    return new Promise((resolve) => {
+      const iframe = getIframe();
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          console.warn('BM3: Timeout ao carregar iframe:', url);
+          resolve(null);
+        }
+      }, timeoutMs);
+
+      function onLoad() {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        iframe.removeEventListener('load', onLoad);
+        try {
+          // Pequeno delay para scripts internos do SEI executarem
+          setTimeout(() => {
+            try {
+              const doc = iframe.contentDocument || iframe.contentWindow.document;
+              resolve(doc);
+            } catch (e) {
+              console.warn('BM3: Sem acesso ao iframe (cross-origin?):', e);
+              resolve(null);
+            }
+          }, 500);
+        } catch (e) {
+          console.warn('BM3: Erro ao acessar iframe:', e);
+          resolve(null);
+        }
+      }
+
+      iframe.addEventListener('load', onLoad);
+      iframe.src = url;
+    });
+  }
+
+  // Carrega uma página SEI no iframe invisível
+  async function loadSEIPage(action, params) {
+    const url = buildSEIUrl(action, params);
+    console.log('BM3: Carregando via iframe:', action, params);
+    return await loadPageInIframe(url);
+  }
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
   }
 
   // --- Captura completa de dados de um processo ---
-  async function fetchDadosCompletos(idProcedimento) {
+  async function fetchDadosCompletos(idProcedimento, updateStatus) {
     if (!idProcedimento) return {};
 
     const resultado = {
@@ -185,32 +245,43 @@
       observacao_processo: ''
     };
 
-    // Buscar página principal do processo (árvore de documentos)
-    const docPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
+    // 1. Página principal do processo (árvore de documentos)
+    if (updateStatus) updateStatus('Abrindo processo...');
+    const docPage = await loadSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
     if (docPage) {
       resultado.documentos = extrairDocumentos(docPage);
+
+      // Tentar extrair dados cadastrais da própria página principal
+      const dadosPrincipal = extrairDadosCadastrais(docPage);
+      Object.assign(resultado, dadosPrincipal);
     }
 
-    // Buscar andamentos/histórico E dados cadastrais do processo
-    await sleep(200);
-    const andPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
+    // 2. Página de consulta (andamentos + dados cadastrais)
+    if (updateStatus) updateStatus('Lendo andamentos...');
+    await sleep(300);
+    const andPage = await loadSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
     if (andPage) {
       resultado.andamentos = extrairAndamentos(andPage);
-      // Extrair dados cadastrais (interessado, assunto, tipo)
+      // Complementar dados cadastrais se não vieram da página principal
       const dadosCadastrais = extrairDadosCadastrais(andPage);
-      Object.assign(resultado, dadosCadastrais);
+      if (!resultado.interessado) resultado.interessado = dadosCadastrais.interessado;
+      if (!resultado.assunto) resultado.assunto = dadosCadastrais.assunto;
+      if (!resultado.tipo_processo) resultado.tipo_processo = dadosCadastrais.tipo_processo;
+      if (!resultado.observacao_processo) resultado.observacao_processo = dadosCadastrais.observacao_processo;
     }
 
-    // Buscar anotações completas
-    await sleep(200);
-    const anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
+    // 3. Anotações completas
+    if (updateStatus) updateStatus('Lendo anotações...');
+    await sleep(300);
+    const anotPage = await loadSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
     if (anotPage) {
       resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
     }
 
-    // Buscar marcador detalhado
-    await sleep(200);
-    const marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
+    // 4. Marcador detalhado
+    if (updateStatus) updateStatus('Lendo marcadores...');
+    await sleep(300);
+    const marcPage = await loadSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
     if (marcPage) {
       resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
     }
@@ -218,7 +289,76 @@
     return resultado;
   }
 
+  // --- Buscar conteúdo de um documento via iframe ---
+  async function fetchConteudoDocumento(idDocumento) {
+    if (!idDocumento) return { texto: '', completo: false, erro: 'Sem ID' };
+
+    try {
+      const doc = await loadSEIPage('documento_visualizar', {
+        id_documento: idDocumento,
+        id_orgao_acesso_externo: 0
+      });
+      if (!doc) return { texto: '', completo: false, erro: 'Página não carregou (timeout)' };
+
+      // 1. Container específico de conteúdo do SEI
+      const conteudoEl = doc.querySelector(
+        '#divConteudo, #divDocumento, .documento-conteudo, .infraAreaTexto, #divVer'
+      );
+      if (conteudoEl) {
+        const texto = conteudoEl.textContent.trim();
+        if (texto.length > 10) {
+          return { texto, completo: true, erro: null };
+        }
+      }
+
+      // 2. O SEI pode renderizar o doc dentro de um iframe interno
+      //    Nesse caso, precisamos verificar iframes dentro do doc
+      const iframeDoc = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src*="documento"]');
+      if (iframeDoc) {
+        try {
+          const iframeContent = iframeDoc.contentDocument || iframeDoc.contentWindow.document;
+          if (iframeContent && iframeContent.body) {
+            const textoIframe = iframeContent.body.textContent.trim();
+            if (textoIframe.length > 10) {
+              return { texto: textoIframe, completo: true, erro: null };
+            }
+          }
+        } catch (e) {
+          // Iframe pode ser cross-origin para PDFs
+        }
+
+        // Verificar se é PDF
+        const src = iframeDoc.getAttribute('src') || '';
+        if (src.includes('.pdf') || src.includes('anexo_download') || src.includes('tipo=A')) {
+          return { texto: '', completo: false, erro: 'PDF/anexo — não extraível como texto' };
+        }
+      }
+
+      // 3. Fallback: body inteiro limpando navegação
+      const body = doc.querySelector('body');
+      if (body) {
+        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao, #infraMenu').forEach(el => el.remove());
+        const texto = body.textContent.trim();
+        if (texto.length > 100) {
+          return { texto, completo: true, erro: null };
+        }
+      }
+
+      // 4. Verificar se há objeto embed (PDF inline)
+      const embed = doc.querySelector('embed[type="application/pdf"], object[type="application/pdf"]');
+      if (embed) {
+        return { texto: '', completo: false, erro: 'PDF embutido — não extraível como texto' };
+      }
+
+      return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
+    } catch (err) {
+      console.warn('BM3: Erro ao buscar conteúdo do documento', idDocumento, err);
+      return { texto: '', completo: false, erro: `Erro: ${err.message}` };
+    }
+  }
+
   // --- Dados cadastrais do processo (interessado, assunto, tipo) ---
+  // Extrai de qualquer página do SEI que contenha esses dados
   function extrairDadosCadastrais(doc) {
     const dados = {
       interessado: '',
@@ -227,46 +367,67 @@
       observacao_processo: ''
     };
 
-    // Estratégia 1: Labels + valores em tabelas/divs do SEI
-    // O SEI exibe dados como: <label>Interessado(s):</label> <span>Valor</span>
-    // ou em tabelas com <td class="infraLabelCampo">Interessado(s):</td><td>Valor</td>
+    // Estratégia 1: TDs com classe de label do SEI (mais comum)
+    // <td class="infraLabelCampo">Interessado(s):</td><td class="infraTipoCampo">Nome</td>
     const labelMappings = [
-      { field: 'interessado',    patterns: ['interessado', 'interessados'] },
-      { field: 'assunto',        patterns: ['assunto', 'especificação', 'especificacao', 'descrição'] },
-      { field: 'tipo_processo',  patterns: ['tipo do processo', 'tipo'] },
-      { field: 'observacao_processo', patterns: ['observação', 'observacao', 'obs'] }
+      { field: 'interessado',         patterns: ['interessado', 'interessados'] },
+      { field: 'assunto',             patterns: ['especificação', 'especificacao', 'assunto', 'descrição'] },
+      { field: 'tipo_processo',       patterns: ['tipo do processo', 'tipo processo', 'tipo'] },
+      { field: 'observacao_processo', patterns: ['observação', 'observacao'] }
     ];
 
-    // Buscar em TDs com classe de label do SEI
-    const labelTds = doc.querySelectorAll('td.infraLabelCampo, th.infraLabelCampo, label');
-    labelTds.forEach(labelEl => {
-      const labelText = labelEl.textContent.trim().toLowerCase().replace(/:$/, '');
+    const allLabels = doc.querySelectorAll(
+      'td.infraLabelCampo, th.infraLabelCampo, label.infraLabelObrigatorio, label.infraLabel, ' +
+      'span.infraLabelCampo, div.infraLabelCampo, label'
+    );
+    allLabels.forEach(labelEl => {
+      const labelText = labelEl.textContent.trim().toLowerCase().replace(/[:\s]+$/, '');
 
       for (const mapping of labelMappings) {
-        if (dados[mapping.field]) continue; // já encontrado
+        if (dados[mapping.field]) continue;
         const matched = mapping.patterns.some(p => labelText.includes(p));
         if (!matched) continue;
 
-        // Valor pode estar no próximo sibling (td) ou em span/div adjacente
-        let valorEl = labelEl.nextElementSibling;
-        if (!valorEl && labelEl.parentElement) {
-          // Caso <td><label>X:</label></td><td>valor</td>
-          valorEl = labelEl.parentElement.nextElementSibling;
+        // Tentar vários caminhos para encontrar o valor
+        let valor = '';
+
+        // Caminho 1: próximo sibling direto
+        const next = labelEl.nextElementSibling;
+        if (next) valor = next.textContent.trim();
+
+        // Caminho 2: próximo td na mesma row
+        if (!valor && labelEl.tagName === 'TD') {
+          const nextTd = labelEl.nextElementSibling;
+          if (nextTd && nextTd.tagName === 'TD') valor = nextTd.textContent.trim();
         }
-        if (valorEl) {
-          const valor = valorEl.textContent.trim();
-          if (valor && valor.length > 0 && valor.length < 2000) {
-            dados[mapping.field] = valor;
+
+        // Caminho 3: parent td -> next td
+        if (!valor && labelEl.parentElement && labelEl.parentElement.tagName === 'TD') {
+          const parentTd = labelEl.parentElement;
+          const nextTd = parentTd.nextElementSibling;
+          if (nextTd) valor = nextTd.textContent.trim();
+        }
+
+        // Caminho 4: mesmo parent, próximo elemento
+        if (!valor && labelEl.parentElement) {
+          const children = Array.from(labelEl.parentElement.children);
+          const idx = children.indexOf(labelEl);
+          if (idx >= 0 && idx < children.length - 1) {
+            valor = children[idx + 1].textContent.trim();
           }
+        }
+
+        if (valor && valor.length > 0 && valor.length < 5000) {
+          dados[mapping.field] = valor;
         }
       }
     });
 
-    // Estratégia 2: Buscar em spans/divs com IDs típicos do SEI
+    // Estratégia 2: IDs típicos do SEI
     const idMappings = [
-      { field: 'interessado',   ids: ['txtInteressados', 'divInteressados', 'lblInteressados'] },
-      { field: 'assunto',       ids: ['txtAssunto', 'divAssunto', 'lblAssunto', 'txtEspecificacao'] },
-      { field: 'tipo_processo', ids: ['txtTipoProcedimento', 'divTipoProcedimento', 'lblTipoProcedimento'] },
+      { field: 'interessado',   ids: ['txtInteressados', 'divInteressados', 'lblInteressados', 'spanInteressados'] },
+      { field: 'assunto',       ids: ['txtAssunto', 'divAssunto', 'lblAssunto', 'txtEspecificacao', 'spanEspecificacao'] },
+      { field: 'tipo_processo', ids: ['txtTipoProcedimento', 'divTipoProcedimento', 'lblTipoProcedimento', 'spanTipoProcedimento'] },
       { field: 'observacao_processo', ids: ['txtObservacao', 'divObservacao'] }
     ];
 
@@ -275,7 +436,7 @@
       for (const id of mapping.ids) {
         const el = doc.getElementById(id);
         if (el) {
-          const valor = el.textContent.trim();
+          const valor = el.value || el.textContent.trim();
           if (valor && valor.length > 0) {
             dados[mapping.field] = valor;
             break;
@@ -284,31 +445,28 @@
       }
     }
 
-    // Estratégia 3: Buscar por texto genérico no corpo da página
-    // Alguns SEIs mostram "Interessado(s): Nome" diretamente no HTML
-    if (!dados.interessado || !dados.assunto) {
-      const allText = doc.body ? doc.body.innerHTML : '';
+    // Estratégia 3: Regex no HTML bruto
+    if (!dados.interessado || !dados.assunto || !dados.tipo_processo) {
+      const html = doc.body ? doc.body.innerHTML : '';
 
       if (!dados.interessado) {
-        const matchInt = allText.match(/Interessado\(?s?\)?:\s*<[^>]*>([^<]+)/i);
-        if (matchInt) dados.interessado = matchInt[1].trim();
+        const m = html.match(/Interessado\(?s?\)?[:\s]*<\/(?:td|label|span|th)>\s*<(?:td|span|div)[^>]*>\s*([^<]+)/i);
+        if (m) dados.interessado = m[1].trim();
       }
       if (!dados.assunto) {
-        const matchAss = allText.match(/Especifica[çc][ãa]o:\s*<[^>]*>([^<]+)/i);
-        if (!matchAss) {
-          const matchAss2 = allText.match(/Assunto:\s*<[^>]*>([^<]+)/i);
-          if (matchAss2) dados.assunto = matchAss2[1].trim();
-        } else {
-          dados.assunto = matchAss[1].trim();
-        }
+        const m = html.match(/(?:Especifica[çc][ãa]o|Assunto)[:\s]*<\/(?:td|label|span|th)>\s*<(?:td|span|div)[^>]*>\s*([^<]+)/i);
+        if (m) dados.assunto = m[1].trim();
+      }
+      if (!dados.tipo_processo) {
+        const m = html.match(/Tipo\s*(?:do\s*)?Processo[:\s]*<\/(?:td|label|span|th)>\s*<(?:td|span|div)[^>]*>\s*([^<]+)/i);
+        if (m) dados.tipo_processo = m[1].trim();
       }
     }
 
-    return dados;
-  }
+    // Log para debug
+    console.log('BM3: Dados cadastrais extraídos:', dados);
 
-  function sleep(ms) {
-    return new Promise(r => setTimeout(r, ms));
+    return dados;
   }
 
   // --- Documentos ---
@@ -392,51 +550,6 @@
     }
 
     return documentos;
-  }
-
-  // --- Buscar conteúdo de um documento HTML interno ---
-  // Retorna { texto, completo, erro } para rastrear status da captura
-  async function fetchConteudoDocumento(idDocumento) {
-    if (!idDocumento) return { texto: '', completo: false, erro: 'Sem ID' };
-    try {
-      const doc = await fetchSEIPage('documento_visualizar', {
-        id_documento: idDocumento,
-        id_orgao_acesso_externo: 0
-      });
-      if (!doc) return { texto: '', completo: false, erro: 'Página não carregou' };
-
-      // SEI renderiza o documento em containers específicos
-      const conteudoEl = doc.querySelector(
-        '#divConteudo, #divDocumento, .documento-conteudo, .infraAreaTexto, #divVer'
-      );
-      if (conteudoEl) {
-        return { texto: conteudoEl.textContent.trim(), completo: true, erro: null };
-      }
-
-      // Fallback: body inteiro (limpando navegação)
-      const body = doc.querySelector('body');
-      if (body) {
-        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao').forEach(el => el.remove());
-        const texto = body.textContent.trim();
-        if (texto.length > 100) {
-          return { texto, completo: true, erro: null };
-        }
-      }
-
-      // Pode ser PDF/imagem dentro de iframe — não é possível extrair texto
-      const iframe = doc.querySelector('iframe[src]');
-      if (iframe) {
-        const src = iframe.getAttribute('src') || '';
-        if (src.includes('.pdf') || src.includes('anexo')) {
-          return { texto: '', completo: false, erro: 'Documento externo (PDF/anexo) — conteúdo não extraível automaticamente' };
-        }
-      }
-
-      return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
-    } catch (err) {
-      console.warn('BM3: Erro ao buscar conteúdo do documento', idDocumento, err);
-      return { texto: '', completo: false, erro: `Erro: ${err.message}` };
-    }
   }
 
   // --- Andamentos / Histórico de movimentação ---
@@ -682,13 +795,18 @@
     btnDeep.disabled = true;
     btnDeep.textContent = 'Buscando...';
 
+    const infoEl = document.getElementById('bm3-info');
     let docsTotal = 0, andTotal = 0, docsComConteudo = 0, docsFalharam = [];
+
     for (let i = 0; i < capturedProcessos.length; i++) {
       const proc = capturedProcessos[i];
-      document.getElementById('bm3-info').innerHTML =
-        `<strong>Captura completa:</strong> ${i + 1}/${count} — ${proc.numero}`;
+      const procLabel = `Processo ${i + 1}/${count}: ${proc.numero}`;
 
-      const dados = await fetchDadosCompletos(proc.id_procedimento);
+      infoEl.innerHTML = `<strong>${procLabel}</strong><br><em>Abrindo processo...</em>`;
+
+      const dados = await fetchDadosCompletos(proc.id_procedimento, (status) => {
+        infoEl.innerHTML = `<strong>${procLabel}</strong><br><em>${status}</em>`;
+      });
 
       proc.documentos = dados.documentos || [];
       proc.andamentos = dados.andamentos || [];
@@ -702,12 +820,13 @@
       docsTotal += proc.documentos.length;
       andTotal += proc.andamentos.length;
 
-      // Buscar conteúdo de TODOS os documentos
+      // Buscar conteúdo de TODOS os documentos via iframe
       for (let j = 0; j < proc.documentos.length; j++) {
         const docItem = proc.documentos[j];
         if (docItem.id_documento) {
-          document.getElementById('bm3-info').innerHTML =
-            `<strong>${proc.numero}:</strong> Lendo doc ${j + 1}/${proc.documentos.length} — ${docItem.nome}`;
+          infoEl.innerHTML =
+            `<strong>${procLabel}</strong><br>` +
+            `<em>Lendo documento ${j + 1}/${proc.documentos.length}: ${docItem.nome}</em>`;
 
           const resultado = await fetchConteudoDocumento(docItem.id_documento);
           docItem.conteudo = resultado.texto;
@@ -721,18 +840,21 @@
             docsFalharam.push({ processo: proc.numero, documento: docItem.nome, erro: resultado.erro });
           }
 
-          await sleep(200);
+          await sleep(300);
         }
       }
 
       await sleep(300);
     }
 
+    // Limpar iframe após captura
+    destroyIframe();
+
     btnDeep.disabled = false;
     btnDeep.textContent = 'Captura Completa';
 
     // Resumo na barra de info
-    document.getElementById('bm3-info').innerHTML =
+    infoEl.innerHTML =
       `<strong>${count}</strong> processo(s) | <strong>${docsTotal}</strong> doc(s) | ` +
       `<strong>${docsComConteudo}</strong> com conteúdo | <strong>${andTotal}</strong> andamento(s)` +
       (docsFalharam.length > 0 ? ` | <span style="color:#e74c3c"><strong>${docsFalharam.length}</strong> sem conteúdo</span>` : '');
@@ -741,17 +863,10 @@
 
     // Alertar sobre documentos sem conteúdo
     if (docsFalharam.length > 0) {
-      const resumo = docsFalharam.slice(0, 10).map(f =>
-        `• ${f.processo} → ${f.documento}: ${f.erro}`
-      ).join('\n');
-      const extra = docsFalharam.length > 10 ? `\n... e mais ${docsFalharam.length - 10} documento(s)` : '';
-
       showToast(`${docsFalharam.length} documento(s) sem conteúdo extraível. Veja o console (F12) para detalhes.`, true);
       console.group('BM3 — Documentos sem conteúdo');
       console.table(docsFalharam);
       console.groupEnd();
-
-      // Salvar relatório de falhas para acesso no painel
       capturedDocsReport = docsFalharam;
     } else {
       showToast(`Captura completa: ${count} processos, ${docsTotal} documentos (${docsComConteudo} com conteúdo), ${andTotal} andamentos!`);
