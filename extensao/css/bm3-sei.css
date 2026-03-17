@@ -298,6 +298,12 @@
   font-style: italic;
 }
 
+.bm3-warn {
+  background: #f39c12 !important;
+  color: #fff !important;
+  font-size: 11px !important;
+}
+
 .bm3-doc-ok {
   color: #1e8449;
 }

@@ -724,6 +724,7 @@
       <div class="bm3-toolbar">
         <button id="bm3-btn-capturar" class="bm3-primary" title="Captura rápida: só dados da tabela">Captura Rápida</button>
         <button id="bm3-btn-capturar-completo" class="bm3-primary bm3-deep" title="Captura completa: documentos, andamentos, anotações e marcadores">Captura Completa</button>
+        <button id="bm3-btn-diagnostico" class="bm3-warn" title="Testa 1 processo e mostra o HTML no console (F12)">Diagnóstico</button>
         <button id="bm3-btn-select-all">Selecionar Todos</button>
         <button id="bm3-btn-copiar" class="bm3-success">Copiar para BM3</button>
         <button id="bm3-btn-exportar-json">Exportar JSON</button>
@@ -747,6 +748,7 @@
     document.getElementById('bm3-btn-capturar').addEventListener('click', capturarProcessos);
     document.getElementById('bm3-btn-capturar-completo').addEventListener('click', capturarCompleto);
     document.getElementById('bm3-btn-select-all').addEventListener('click', toggleSelectAll);
+    document.getElementById('bm3-btn-diagnostico').addEventListener('click', executarDiagnostico);
     document.getElementById('bm3-btn-copiar').addEventListener('click', copiarParaBM3);
     document.getElementById('bm3-btn-exportar-json').addEventListener('click', exportarJSON);
   }
@@ -760,6 +762,127 @@
     const overlay = document.getElementById('bm3-overlay');
     panel.classList.toggle('open');
     overlay.classList.toggle('show');
+  }
+
+  // ============================================================
+  // DIAGNÓSTICO: Testa 1 processo e mostra tudo no console
+  // ============================================================
+  async function executarDiagnostico() {
+    const infoEl = document.getElementById('bm3-info');
+
+    // 1. Primeiro, verificar o que vemos na tabela
+    const processos = scrapeProcessos();
+    console.group('=== BM3 DIAGNÓSTICO ===');
+    console.log('1. TABELA DA PÁGINA ATUAL');
+    console.log('   Processos encontrados na tabela:', processos.length);
+
+    if (processos.length === 0) {
+      console.log('   PROBLEMA: Nenhum processo na tabela!');
+      console.log('   Tabelas encontradas:', document.querySelectorAll('table').length);
+      console.log('   IDs de tabelas:', Array.from(document.querySelectorAll('table[id]')).map(t => t.id));
+      console.log('   Links procedimento_trabalhar:', document.querySelectorAll('a[href*="procedimento_trabalhar"]').length);
+      console.log('   HTML do body (primeiros 2000 chars):', document.body.innerHTML.substring(0, 2000));
+      console.groupEnd();
+      infoEl.innerHTML = '<span style="color:red">Diagnóstico: nenhum processo encontrado na tabela. Veja F12 > Console.</span>';
+      showToast('Nenhum processo na tabela. Abra F12 > Console para ver o diagnóstico.', true);
+      return;
+    }
+
+    const proc = processos[0];
+    console.log('   Primeiro processo:', JSON.stringify(proc, null, 2));
+
+    // 2. Testar iframe — carregar a página do processo
+    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando iframe com ' + proc.numero + '...';
+
+    console.log('\n2. TESTE IFRAME — procedimento_trabalhar');
+    const url1 = buildSEIUrl('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
+    console.log('   URL:', url1);
+
+    const page1 = await loadPageInIframe(url1);
+    if (!page1) {
+      console.log('   FALHA: iframe retornou null (timeout ou cross-origin)');
+      console.log('   Testando com fetch para comparar...');
+      try {
+        const resp = await fetch(url1, { credentials: 'same-origin' });
+        console.log('   Fetch status:', resp.status);
+        const html = await resp.text();
+        console.log('   Fetch retornou HTML:', html.length, 'chars');
+        console.log('   Primeiros 3000 chars do fetch:', html.substring(0, 3000));
+      } catch (e) {
+        console.log('   Fetch também falhou:', e.message);
+      }
+    } else {
+      console.log('   iframe carregou OK!');
+      console.log('   Title:', page1.title);
+      console.log('   URL do iframe:', page1.location?.href || 'N/A');
+      console.log('   Body length:', page1.body?.innerHTML?.length || 0);
+      console.log('   Primeiros 3000 chars:', page1.body?.innerHTML?.substring(0, 3000));
+
+      // Verificar seletores de documentos
+      const links1 = page1.querySelectorAll('a[href*="documento_consultar"]');
+      const links2 = page1.querySelectorAll('a[href*="protocolo_visualizar"]');
+      const links3 = page1.querySelectorAll('a[href*="documento_visualizar"]');
+      console.log('   Links documento_consultar:', links1.length);
+      console.log('   Links protocolo_visualizar:', links2.length);
+      console.log('   Links documento_visualizar:', links3.length);
+      console.log('   Todos os links <a>:', Array.from(page1.querySelectorAll('a')).slice(0, 20).map(a => ({
+        text: a.textContent.trim().substring(0, 50),
+        href: (a.getAttribute('href') || '').substring(0, 100)
+      })));
+      console.log('   IFrames na página:', Array.from(page1.querySelectorAll('iframe')).map(f => ({
+        id: f.id, name: f.name, src: (f.getAttribute('src') || '').substring(0, 100)
+      })));
+
+      const docs = extrairDocumentos(page1);
+      console.log('   Documentos extraídos:', docs.length, docs);
+    }
+
+    // 3. Testar procedimento_consultar
+    console.log('\n3. TESTE IFRAME — procedimento_consultar');
+    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando consulta de ' + proc.numero + '...';
+    await sleep(500);
+
+    const url2 = buildSEIUrl('procedimento_consultar', { id_procedimento: proc.id_procedimento });
+    console.log('   URL:', url2);
+
+    const page2 = await loadPageInIframe(url2);
+    if (!page2) {
+      console.log('   FALHA: iframe retornou null');
+    } else {
+      console.log('   iframe carregou OK!');
+      console.log('   Title:', page2.title);
+      console.log('   Body length:', page2.body?.innerHTML?.length || 0);
+      console.log('   Primeiros 3000 chars:', page2.body?.innerHTML?.substring(0, 3000));
+
+      // Verificar labels
+      const labels = page2.querySelectorAll('td, th, label, span');
+      const labelTexts = Array.from(labels).map(l => l.textContent.trim()).filter(t => t.length > 0 && t.length < 100);
+      console.log('   Todos labels/tds/spans (< 100 chars):', labelTexts.slice(0, 50));
+
+      // Verificar se há tabelas
+      const tabelas = page2.querySelectorAll('table');
+      console.log('   Tabelas encontradas:', tabelas.length);
+      tabelas.forEach((t, i) => {
+        console.log(`   Tabela ${i}: id="${t.id}", class="${t.className}", rows=${t.rows?.length || 0}`);
+      });
+
+      const cadastrais = extrairDadosCadastrais(page2);
+      console.log('   Dados cadastrais extraídos:', cadastrais);
+
+      const andamentos = extrairAndamentos(page2);
+      console.log('   Andamentos extraídos:', andamentos.length, andamentos.slice(0, 3));
+    }
+
+    // 4. Resultado final
+    destroyIframe();
+    console.log('\n4. RESUMO');
+    console.log('   Se os iframes retornaram null = problema de carregamento');
+    console.log('   Se carregaram mas dados vazios = problema de seletores (cole o HTML aqui)');
+    console.log('   Se carregaram e body pequeno = SEI redirecionou (login ou frame-busting)');
+    console.groupEnd();
+
+    infoEl.innerHTML = '<strong>Diagnóstico completo!</strong> Abra <strong>F12 > Console</strong> e cole o resultado aqui.';
+    showToast('Diagnóstico concluído! Abra F12 > Console, copie tudo e cole aqui.', false);
   }
 
   function capturarProcessos() {
