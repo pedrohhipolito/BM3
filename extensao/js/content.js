@@ -6,6 +6,11 @@
 (function() {
   'use strict';
 
+  // Debug: mudar para true para ver logs detalhados no console
+  const BM3_DEBUG = false;
+  function bm3log(...args) { if (BM3_DEBUG) console.log('BM3:', ...args); }
+  function bm3warn(...args) { console.warn('BM3:', ...args); }
+
   // Detectar versão do SEI (novo layout vs clássico)
   const isNewSEI = document.querySelector('#divInfraSidebarMenu ul#infraMenu') !== null;
 
@@ -194,7 +199,7 @@
 
       return new DOMParser().parseFromString(html, 'text/html');
     } catch (err) {
-      console.warn('BM3: Fetch erro:', url, err);
+      bm3warn('Fetch erro:', url, err);
       return null;
     }
   }
@@ -206,6 +211,7 @@
 
   // Resolver URL relativa para absoluta no contexto do SEI
   function resolveUrl(relativeUrl) {
+    if (!relativeUrl) return '';
     if (relativeUrl.startsWith('http')) return relativeUrl;
     const base = window.location.href.split('controlador.php')[0];
     return new URL(relativeUrl, base).href;
@@ -249,7 +255,7 @@
     };
 
     actionUrls = actionUrls || {};
-    console.log('BM3: actionUrls do processo:', Object.keys(actionUrls));
+    bm3log('actionUrls do processo:', Object.keys(actionUrls));
 
     // 1. Página principal do processo (documentos)
     if (updateStatus) updateStatus('Abrindo processo...');
@@ -257,11 +263,13 @@
     if (mainPage) {
       // Extrair documentos da página principal (6 encontrados no diagnóstico!)
       resultado.documentos = extrairDocumentos(mainPage);
-      console.log('BM3: Documentos da página principal:', resultado.documentos.length);
+      bm3log('Documentos da página principal:', resultado.documentos.length);
 
-      // Dados cadastrais da página principal
+      // Dados cadastrais da página principal (só preencher campos vazios)
       const dadosPrincipal = extrairDadosCadastrais(mainPage);
-      Object.assign(resultado, dadosPrincipal);
+      for (const [k, v] of Object.entries(dadosPrincipal)) {
+        if (v && !resultado[k]) resultado[k] = v;
+      }
 
       // Buscar links assinados DENTRO da página principal também
       const mainLinks = findSignedLinks(mainPage);
@@ -281,7 +289,7 @@
 
     const consultarUrl = actionUrls['procedimento_consultar'];
     if (consultarUrl) {
-      console.log('BM3: Usando URL assinada para consultar:', consultarUrl.substring(0, 100));
+      bm3log('Usando URL assinada para consultar:', consultarUrl.substring(0, 100));
       const consultarPage = await fetchSEIUrl(consultarUrl);
       if (consultarPage) {
         resultado.andamentos = extrairAndamentos(consultarPage);
@@ -290,10 +298,10 @@
         if (!resultado.assunto) resultado.assunto = dados.assunto;
         if (!resultado.tipo_processo) resultado.tipo_processo = dados.tipo_processo;
         if (!resultado.observacao_processo) resultado.observacao_processo = dados.observacao_processo;
-        console.log('BM3: Andamentos:', resultado.andamentos.length, 'Cadastrais:', dados);
+        bm3log('Andamentos:', resultado.andamentos.length, 'Cadastrais:', dados);
       }
     } else {
-      console.log('BM3: Sem URL assinada para procedimento_consultar');
+      bm3log('Sem URL assinada para procedimento_consultar');
     }
 
     // 3. Anotações — via URL assinada
@@ -348,7 +356,7 @@
       }
 
       // 2. iframe de visualização (tem URL assinada que podemos buscar)
-      const iframeEl = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src]');
+      const iframeEl = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src*="documento"], iframe[src*="visualizar"]');
       if (iframeEl) {
         const iframeSrc = iframeEl.getAttribute('src') || '';
         if (iframeSrc) {
@@ -387,7 +395,7 @@
 
       return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
     } catch (err) {
-      console.warn('BM3: Erro ao buscar documento', docUrl, err);
+      bm3warn('Erro ao buscar documento', docUrl, err);
       return { texto: '', completo: false, erro: `Erro: ${err.message}` };
     }
   }
@@ -407,7 +415,7 @@
     const labelMappings = [
       { field: 'interessado',         patterns: ['interessado', 'interessados'] },
       { field: 'assunto',             patterns: ['especificação', 'especificacao', 'assunto', 'descrição'] },
-      { field: 'tipo_processo',       patterns: ['tipo do processo', 'tipo processo', 'tipo'] },
+      { field: 'tipo_processo',       patterns: ['tipo do processo', 'tipo processo'] },
       { field: 'observacao_processo', patterns: ['observação', 'observacao'] }
     ];
 
@@ -499,7 +507,7 @@
     }
 
     // Log para debug
-    console.log('BM3: Dados cadastrais extraídos:', dados);
+    bm3log('Dados cadastrais extraídos:', dados);
 
     return dados;
   }
@@ -581,7 +589,7 @@
       });
     }
 
-    console.log('BM3: extrairDocumentos encontrou', documentos.length, 'docs');
+    bm3log('extrairDocumentos encontrou', documentos.length, 'docs');
     return documentos;
   }
 
