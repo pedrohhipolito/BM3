@@ -145,9 +145,9 @@
   }
 
   // ============================================================
-  // Scraping Profundo via IFRAME INVISÍVEL
-  // Carrega cada página SEI em um iframe oculto para usar
-  // a sessão real do usuário e renderização completa do navegador
+  // Scraping Profundo via FETCH com sessão do navegador
+  // O SEI bloqueia iframes (redireciona para login), mas fetch
+  // com credentials funciona se enviarmos os headers corretos.
   // ============================================================
 
   function buildSEIUrl(action, params) {
@@ -159,75 +159,76 @@
     return base + '?' + queryParts.join('&');
   }
 
-  // Iframe reutilizável — criado uma vez, reutilizado em todas as capturas
-  let _iframeBM3 = null;
-
-  function getIframe() {
-    if (_iframeBM3 && _iframeBM3.parentNode) return _iframeBM3;
-    _iframeBM3 = document.createElement('iframe');
-    _iframeBM3.id = 'bm3-scraper-iframe';
-    _iframeBM3.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-    document.body.appendChild(_iframeBM3);
-    return _iframeBM3;
-  }
-
-  function destroyIframe() {
-    if (_iframeBM3 && _iframeBM3.parentNode) {
-      _iframeBM3.parentNode.removeChild(_iframeBM3);
-    }
-    _iframeBM3 = null;
-  }
-
-  // Carrega uma URL no iframe e retorna o document quando pronto
-  function loadPageInIframe(url, timeoutMs = 15000) {
-    return new Promise((resolve) => {
-      const iframe = getIframe();
-      let resolved = false;
-
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          console.warn('BM3: Timeout ao carregar iframe:', url);
-          resolve(null);
-        }
-      }, timeoutMs);
-
-      function onLoad() {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
-        iframe.removeEventListener('load', onLoad);
-        try {
-          // Pequeno delay para scripts internos do SEI executarem
-          setTimeout(() => {
-            try {
-              const doc = iframe.contentDocument || iframe.contentWindow.document;
-              resolve(doc);
-            } catch (e) {
-              console.warn('BM3: Sem acesso ao iframe (cross-origin?):', e);
-              resolve(null);
-            }
-          }, 500);
-        } catch (e) {
-          console.warn('BM3: Erro ao acessar iframe:', e);
-          resolve(null);
-        }
-      }
-
-      iframe.addEventListener('load', onLoad);
-      iframe.src = url;
-    });
-  }
-
-  // Carrega uma página SEI no iframe invisível
-  async function loadSEIPage(action, params) {
-    const url = buildSEIUrl(action, params);
-    console.log('BM3: Carregando via iframe:', action, params);
-    return await loadPageInIframe(url);
-  }
-
   function sleep(ms) {
     return new Promise(r => setTimeout(r, ms));
+  }
+
+  // Fetch uma página SEI mantendo a sessão do usuário
+  async function fetchSEIPage(action, params) {
+    const url = buildSEIUrl(action, params);
+    try {
+      const resp = await fetch(url, {
+        credentials: 'include',
+        redirect: 'follow',
+        headers: {
+          'Accept': 'text/html,application/xhtml+xml',
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      });
+
+      if (!resp.ok) {
+        console.warn('BM3: Fetch falhou', resp.status, url);
+        return null;
+      }
+
+      // Verificar se foi redirecionado para login
+      const finalUrl = resp.url || '';
+      if (finalUrl.includes('login.php') || finalUrl.includes('/sip/')) {
+        console.warn('BM3: Redirecionado para login. Tentando via XHR...');
+        return await fetchSEIPageXHR(url);
+      }
+
+      const html = await resp.text();
+
+      // Verificar se o HTML é uma página de login
+      if (html.includes('frmLogin') || html.includes('txtUsuario')) {
+        console.warn('BM3: Resposta é página de login. Tentando via XHR...');
+        return await fetchSEIPageXHR(url);
+      }
+
+      return new DOMParser().parseFromString(html, 'text/html');
+    } catch (err) {
+      console.warn('BM3: Erro no fetch', action, err);
+      return null;
+    }
+  }
+
+  // Fallback: XMLHttpRequest síncrono (envia cookies automaticamente)
+  function fetchSEIPageXHR(url) {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.withCredentials = true;
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          const html = xhr.responseText;
+          if (html.includes('frmLogin') || html.includes('txtUsuario')) {
+            console.warn('BM3: XHR também retornou login para:', url);
+            resolve(null);
+            return;
+          }
+          resolve(new DOMParser().parseFromString(html, 'text/html'));
+        } else {
+          console.warn('BM3: XHR status', xhr.status);
+          resolve(null);
+        }
+      };
+      xhr.onerror = function() {
+        console.warn('BM3: XHR erro para:', url);
+        resolve(null);
+      };
+      xhr.send();
+    });
   }
 
   // --- Captura completa de dados de um processo ---
@@ -247,11 +248,9 @@
 
     // 1. Página principal do processo (árvore de documentos)
     if (updateStatus) updateStatus('Abrindo processo...');
-    const docPage = await loadSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
+    const docPage = await fetchSEIPage('procedimento_trabalhar', { id_procedimento: idProcedimento });
     if (docPage) {
       resultado.documentos = extrairDocumentos(docPage);
-
-      // Tentar extrair dados cadastrais da própria página principal
       const dadosPrincipal = extrairDadosCadastrais(docPage);
       Object.assign(resultado, dadosPrincipal);
     }
@@ -259,10 +258,9 @@
     // 2. Página de consulta (andamentos + dados cadastrais)
     if (updateStatus) updateStatus('Lendo andamentos...');
     await sleep(300);
-    const andPage = await loadSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
+    const andPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
     if (andPage) {
       resultado.andamentos = extrairAndamentos(andPage);
-      // Complementar dados cadastrais se não vieram da página principal
       const dadosCadastrais = extrairDadosCadastrais(andPage);
       if (!resultado.interessado) resultado.interessado = dadosCadastrais.interessado;
       if (!resultado.assunto) resultado.assunto = dadosCadastrais.assunto;
@@ -273,7 +271,7 @@
     // 3. Anotações completas
     if (updateStatus) updateStatus('Lendo anotações...');
     await sleep(300);
-    const anotPage = await loadSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
+    const anotPage = await fetchSEIPage('anotacao_registrar', { id_procedimento: idProcedimento });
     if (anotPage) {
       resultado.anotacao_completa = extrairAnotacaoCompleta(anotPage);
     }
@@ -281,7 +279,7 @@
     // 4. Marcador detalhado
     if (updateStatus) updateStatus('Lendo marcadores...');
     await sleep(300);
-    const marcPage = await loadSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
+    const marcPage = await fetchSEIPage('andamento_marcador_gerenciar', { id_procedimento: idProcedimento });
     if (marcPage) {
       resultado.marcador_detalhado = extrairMarcadorDetalhado(marcPage);
     }
@@ -289,16 +287,16 @@
     return resultado;
   }
 
-  // --- Buscar conteúdo de um documento via iframe ---
+  // --- Buscar conteúdo de um documento via fetch ---
   async function fetchConteudoDocumento(idDocumento) {
     if (!idDocumento) return { texto: '', completo: false, erro: 'Sem ID' };
 
     try {
-      const doc = await loadSEIPage('documento_visualizar', {
+      const doc = await fetchSEIPage('documento_visualizar', {
         id_documento: idDocumento,
         id_orgao_acesso_externo: 0
       });
-      if (!doc) return { texto: '', completo: false, erro: 'Página não carregou (timeout)' };
+      if (!doc) return { texto: '', completo: false, erro: 'Página não carregou ou sessão expirada' };
 
       // 1. Container específico de conteúdo do SEI
       const conteudoEl = doc.querySelector(
@@ -311,40 +309,51 @@
         }
       }
 
-      // 2. O SEI pode renderizar o doc dentro de um iframe interno
-      //    Nesse caso, precisamos verificar iframes dentro do doc
-      const iframeDoc = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src*="documento"]');
-      if (iframeDoc) {
-        try {
-          const iframeContent = iframeDoc.contentDocument || iframeDoc.contentWindow.document;
-          if (iframeContent && iframeContent.body) {
-            const textoIframe = iframeContent.body.textContent.trim();
-            if (textoIframe.length > 10) {
-              return { texto: textoIframe, completo: true, erro: null };
-            }
+      // 2. Verificar se tem iframe de visualização (URL do doc real)
+      const iframeEl = doc.querySelector('iframe#ifrVisualizacao, iframe[name="ifrVisualizacao"], iframe[src*="documento"]');
+      if (iframeEl) {
+        const iframeSrc = iframeEl.getAttribute('src') || '';
+        if (iframeSrc) {
+          // Se é PDF, não podemos extrair texto
+          if (iframeSrc.includes('.pdf') || iframeSrc.includes('anexo_download') || iframeSrc.includes('tipo=A')) {
+            return { texto: '', completo: false, erro: 'PDF/anexo — não extraível como texto' };
           }
-        } catch (e) {
-          // Iframe pode ser cross-origin para PDFs
-        }
-
-        // Verificar se é PDF
-        const src = iframeDoc.getAttribute('src') || '';
-        if (src.includes('.pdf') || src.includes('anexo_download') || src.includes('tipo=A')) {
-          return { texto: '', completo: false, erro: 'PDF/anexo — não extraível como texto' };
+          // Senão, buscar o conteúdo do iframe via fetch
+          const absUrl = iframeSrc.startsWith('http') ? iframeSrc : new URL(iframeSrc, window.location.href).href;
+          try {
+            const resp2 = await fetch(absUrl, { credentials: 'include' });
+            if (resp2.ok) {
+              const html2 = await resp2.text();
+              if (!html2.includes('frmLogin')) {
+                const doc2 = new DOMParser().parseFromString(html2, 'text/html');
+                const body2 = doc2.querySelector('body');
+                if (body2) {
+                  body2.querySelectorAll('script, style').forEach(el => el.remove());
+                  const texto2 = body2.textContent.trim();
+                  if (texto2.length > 10) {
+                    return { texto: texto2, completo: true, erro: null };
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // ignore, fallback abaixo
+          }
         }
       }
 
       // 3. Fallback: body inteiro limpando navegação
       const body = doc.querySelector('body');
       if (body) {
-        body.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao, #infraMenu').forEach(el => el.remove());
-        const texto = body.textContent.trim();
+        const clone = body.cloneNode(true);
+        clone.querySelectorAll('script, style, nav, header, footer, #infraBarraSistema, .infraBarraLocalizacao, #infraMenu').forEach(el => el.remove());
+        const texto = clone.textContent.trim();
         if (texto.length > 100) {
           return { texto, completo: true, erro: null };
         }
       }
 
-      // 4. Verificar se há objeto embed (PDF inline)
+      // 4. Verificar se tem embed de PDF
       const embed = doc.querySelector('embed[type="application/pdf"], object[type="application/pdf"]');
       if (embed) {
         return { texto: '', completo: false, erro: 'PDF embutido — não extraível como texto' };
@@ -352,7 +361,7 @@
 
       return { texto: '', completo: false, erro: 'Conteúdo não encontrado na página' };
     } catch (err) {
-      console.warn('BM3: Erro ao buscar conteúdo do documento', idDocumento, err);
+      console.warn('BM3: Erro ao buscar documento', idDocumento, err);
       return { texto: '', completo: false, erro: `Erro: ${err.message}` };
     }
   }
@@ -791,94 +800,112 @@
     const proc = processos[0];
     console.log('   Primeiro processo:', JSON.stringify(proc, null, 2));
 
-    // 2. Testar iframe — carregar a página do processo
-    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando iframe com ' + proc.numero + '...';
+    // 2. Verificar cookies e sessão
+    console.log('\n2. COOKIES E SESSÃO');
+    console.log('   document.cookie:', document.cookie || '(vazio)');
+    console.log('   window === window.top:', window === window.top);
+    console.log('   location.href:', window.location.href);
 
-    console.log('\n2. TESTE IFRAME — procedimento_trabalhar');
+    // 3. Testar FETCH — procedimento_trabalhar
+    console.log('\n3. TESTE FETCH — procedimento_trabalhar');
+    infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando fetch com ' + proc.numero + '...';
+
     const url1 = buildSEIUrl('procedimento_trabalhar', { id_procedimento: proc.id_procedimento });
     console.log('   URL:', url1);
 
-    const page1 = await loadPageInIframe(url1);
-    if (!page1) {
-      console.log('   FALHA: iframe retornou null (timeout ou cross-origin)');
-      console.log('   Testando com fetch para comparar...');
-      try {
-        const resp = await fetch(url1, { credentials: 'same-origin' });
-        console.log('   Fetch status:', resp.status);
-        const html = await resp.text();
-        console.log('   Fetch retornou HTML:', html.length, 'chars');
-        console.log('   Primeiros 3000 chars do fetch:', html.substring(0, 3000));
-      } catch (e) {
-        console.log('   Fetch também falhou:', e.message);
+    try {
+      // Teste A: fetch com credentials include
+      const respA = await fetch(url1, { credentials: 'include', redirect: 'follow' });
+      console.log('   Fetch (include) status:', respA.status, 'URL final:', respA.url);
+      const htmlA = await respA.text();
+      console.log('   Resposta tem login?', htmlA.includes('frmLogin'));
+      console.log('   HTML length:', htmlA.length);
+      console.log('   Primeiros 3000 chars:', htmlA.substring(0, 3000));
+
+      if (!htmlA.includes('frmLogin')) {
+        const doc1 = new DOMParser().parseFromString(htmlA, 'text/html');
+        console.log('   Title:', doc1.title);
+
+        // Verificar seletores de documentos
+        const links1 = doc1.querySelectorAll('a[href*="documento_consultar"]');
+        const links2 = doc1.querySelectorAll('a[href*="protocolo_visualizar"]');
+        const links3 = doc1.querySelectorAll('a[href*="documento_visualizar"]');
+        console.log('   Links documento_consultar:', links1.length);
+        console.log('   Links protocolo_visualizar:', links2.length);
+        console.log('   Links documento_visualizar:', links3.length);
+        console.log('   Todos os links <a>:', Array.from(doc1.querySelectorAll('a')).slice(0, 30).map(a => ({
+          text: a.textContent.trim().substring(0, 60),
+          href: (a.getAttribute('href') || '').substring(0, 120)
+        })));
+        console.log('   IFrames:', Array.from(doc1.querySelectorAll('iframe')).map(f => ({
+          id: f.id, name: f.name, src: (f.getAttribute('src') || '').substring(0, 120)
+        })));
+
+        const docs = extrairDocumentos(doc1);
+        console.log('   Documentos extraídos:', docs.length, docs);
+      } else {
+        console.log('   PROBLEMA: fetch retornou página de login!');
+        console.log('   Testando XHR como fallback...');
+        const xhrResult = await fetchSEIPageXHR(url1);
+        if (xhrResult) {
+          console.log('   XHR funcionou! Body length:', xhrResult.body?.innerHTML?.length);
+          console.log('   XHR primeiros 2000:', xhrResult.body?.innerHTML?.substring(0, 2000));
+        } else {
+          console.log('   XHR também retornou login.');
+        }
       }
-    } else {
-      console.log('   iframe carregou OK!');
-      console.log('   Title:', page1.title);
-      console.log('   URL do iframe:', page1.location?.href || 'N/A');
-      console.log('   Body length:', page1.body?.innerHTML?.length || 0);
-      console.log('   Primeiros 3000 chars:', page1.body?.innerHTML?.substring(0, 3000));
-
-      // Verificar seletores de documentos
-      const links1 = page1.querySelectorAll('a[href*="documento_consultar"]');
-      const links2 = page1.querySelectorAll('a[href*="protocolo_visualizar"]');
-      const links3 = page1.querySelectorAll('a[href*="documento_visualizar"]');
-      console.log('   Links documento_consultar:', links1.length);
-      console.log('   Links protocolo_visualizar:', links2.length);
-      console.log('   Links documento_visualizar:', links3.length);
-      console.log('   Todos os links <a>:', Array.from(page1.querySelectorAll('a')).slice(0, 20).map(a => ({
-        text: a.textContent.trim().substring(0, 50),
-        href: (a.getAttribute('href') || '').substring(0, 100)
-      })));
-      console.log('   IFrames na página:', Array.from(page1.querySelectorAll('iframe')).map(f => ({
-        id: f.id, name: f.name, src: (f.getAttribute('src') || '').substring(0, 100)
-      })));
-
-      const docs = extrairDocumentos(page1);
-      console.log('   Documentos extraídos:', docs.length, docs);
+    } catch (e) {
+      console.log('   Fetch erro:', e.message);
     }
 
-    // 3. Testar procedimento_consultar
-    console.log('\n3. TESTE IFRAME — procedimento_consultar');
+    // 4. Testar FETCH — procedimento_consultar
+    console.log('\n4. TESTE FETCH — procedimento_consultar');
     infoEl.innerHTML = '<strong>Diagnóstico:</strong> Testando consulta de ' + proc.numero + '...';
     await sleep(500);
 
     const url2 = buildSEIUrl('procedimento_consultar', { id_procedimento: proc.id_procedimento });
     console.log('   URL:', url2);
 
-    const page2 = await loadPageInIframe(url2);
-    if (!page2) {
-      console.log('   FALHA: iframe retornou null');
-    } else {
-      console.log('   iframe carregou OK!');
-      console.log('   Title:', page2.title);
-      console.log('   Body length:', page2.body?.innerHTML?.length || 0);
-      console.log('   Primeiros 3000 chars:', page2.body?.innerHTML?.substring(0, 3000));
+    try {
+      const respB = await fetch(url2, { credentials: 'include', redirect: 'follow' });
+      console.log('   Fetch status:', respB.status, 'URL final:', respB.url);
+      const htmlB = await respB.text();
+      console.log('   Resposta tem login?', htmlB.includes('frmLogin'));
+      console.log('   HTML length:', htmlB.length);
 
-      // Verificar labels
-      const labels = page2.querySelectorAll('td, th, label, span');
-      const labelTexts = Array.from(labels).map(l => l.textContent.trim()).filter(t => t.length > 0 && t.length < 100);
-      console.log('   Todos labels/tds/spans (< 100 chars):', labelTexts.slice(0, 50));
+      if (!htmlB.includes('frmLogin')) {
+        const doc2 = new DOMParser().parseFromString(htmlB, 'text/html');
+        console.log('   Title:', doc2.title);
+        console.log('   Primeiros 3000 chars:', htmlB.substring(0, 3000));
 
-      // Verificar se há tabelas
-      const tabelas = page2.querySelectorAll('table');
-      console.log('   Tabelas encontradas:', tabelas.length);
-      tabelas.forEach((t, i) => {
-        console.log(`   Tabela ${i}: id="${t.id}", class="${t.className}", rows=${t.rows?.length || 0}`);
-      });
+        // Labels e dados
+        const labels = doc2.querySelectorAll('td, th, label, span');
+        const labelTexts = Array.from(labels).map(l => l.textContent.trim()).filter(t => t.length > 0 && t.length < 100);
+        console.log('   Labels/TDs/Spans:', labelTexts.slice(0, 50));
 
-      const cadastrais = extrairDadosCadastrais(page2);
-      console.log('   Dados cadastrais extraídos:', cadastrais);
+        const tabelas = doc2.querySelectorAll('table');
+        console.log('   Tabelas:', tabelas.length);
+        tabelas.forEach((t, i) => {
+          console.log(`   Tabela ${i}: id="${t.id}", class="${t.className}", rows=${t.rows?.length || 0}`);
+        });
 
-      const andamentos = extrairAndamentos(page2);
-      console.log('   Andamentos extraídos:', andamentos.length, andamentos.slice(0, 3));
+        const cadastrais = extrairDadosCadastrais(doc2);
+        console.log('   Dados cadastrais:', cadastrais);
+        const andamentos = extrairAndamentos(doc2);
+        console.log('   Andamentos:', andamentos.length, andamentos.slice(0, 3));
+      } else {
+        console.log('   PROBLEMA: fetch retornou login!');
+        console.log('   Primeiros 1000 chars:', htmlB.substring(0, 1000));
+      }
+    } catch (e) {
+      console.log('   Fetch erro:', e.message);
     }
 
-    // 4. Resultado final
-    destroyIframe();
-    console.log('\n4. RESUMO');
-    console.log('   Se os iframes retornaram null = problema de carregamento');
-    console.log('   Se carregaram mas dados vazios = problema de seletores (cole o HTML aqui)');
-    console.log('   Se carregaram e body pequeno = SEI redirecionou (login ou frame-busting)');
+    // 5. Resumo
+    console.log('\n5. RESUMO');
+    console.log('   Se fetch retorna login = cookies/sessão não são enviados pelo fetch');
+    console.log('   Se fetch funciona mas dados vazios = seletores errados (cole HTML aqui)');
+    console.log('   Se fetch funciona e tem dados = captura completa deve funcionar!');
     console.groupEnd();
 
     infoEl.innerHTML = '<strong>Diagnóstico completo!</strong> Abra <strong>F12 > Console</strong> e cole o resultado aqui.';
@@ -969,9 +996,6 @@
 
       await sleep(300);
     }
-
-    // Limpar iframe após captura
-    destroyIframe();
 
     btnDeep.disabled = false;
     btnDeep.textContent = 'Captura Completa';
