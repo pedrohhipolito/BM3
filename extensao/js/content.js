@@ -14,6 +14,17 @@
   // Detectar versão do SEI (novo layout vs clássico)
   const isNewSEI = document.querySelector('#divInfraSidebarMenu ul#infraMenu') !== null;
 
+  // Normalizar texto pt-BR — substituir caracteres corrompidos comuns
+  function normalizarTexto(texto) {
+    if (!texto) return '';
+    return texto
+      // Remover caracteres de substituição Unicode
+      .replace(/\uFFFD/g, '')
+      // Normalizar espaços múltiplos
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   // ============================================================
   // Scraping: Extrai processos da tabela do SEI
   // ============================================================
@@ -194,7 +205,28 @@
         return null;
       }
 
-      const html = await resp.text();
+      // Decodificar com charset correto (SEI pode usar ISO-8859-1 ou UTF-8)
+      const buffer = await resp.arrayBuffer();
+      const contentType = resp.headers.get('content-type') || '';
+      const charsetMatch = contentType.match(/charset=([^\s;]+)/i);
+      let charset = charsetMatch ? charsetMatch[1].trim() : 'utf-8';
+
+      let html = new TextDecoder(charset, { fatal: false }).decode(buffer);
+
+      // Se decodificou como UTF-8 mas tem caracteres de substituição, tentar ISO-8859-1
+      if (charset.toLowerCase() === 'utf-8' && html.includes('\uFFFD')) {
+        html = new TextDecoder('iso-8859-1').decode(buffer);
+      }
+
+      // Detectar charset na meta tag do HTML e re-decodificar se necessário
+      const metaCharsetMatch = html.match(/<meta[^>]+charset=["']?([^"'\s;>]+)/i);
+      if (metaCharsetMatch) {
+        const metaCharset = metaCharsetMatch[1].toLowerCase();
+        if (metaCharset !== charset.toLowerCase() && metaCharset !== 'utf-8') {
+          html = new TextDecoder(metaCharset, { fatal: false }).decode(buffer);
+        }
+      }
+
       if (html.includes('frmLogin') && html.includes('txtUsuario')) return null;
 
       return new DOMParser().parseFromString(html, 'text/html');
@@ -512,28 +544,64 @@
     return dados;
   }
 
-  // --- Documentos ---
-  // Extrai lista de documentos de qualquer página do SEI
-  // Captura a URL completa (com hash) para poder buscar o conteúdo depois
+  // --- Documentos internos ao processo ---
+  // Extrai apenas documentos reais da árvore do processo SEI
+  // Ignora elementos de UI (menu, sidebar, formulários de pesquisa, etc.)
   function extrairDocumentos(doc) {
     const documentos = [];
     const seen = new Set(); // evitar duplicatas
 
-    // Buscar TODOS os links que possam ser documentos
-    // O SEI usa vários padrões de ação nos links
-    doc.querySelectorAll('a[href*="controlador.php"]').forEach(link => {
+    // Nomes de elementos de UI/navegação que NÃO são documentos do processo
+    const uiExclusions = [
+      'favoritos', 'pesquisa', 'pesquisa pública', 'pesquisa publica',
+      'tramita gov', 'app protocolo', 'política de privacidade',
+      'politica de privacidade', 'login', 'sair', 'controle de processos',
+      'estatísticas', 'estatisticas', 'base de conhecimento',
+      'textos padrão', 'textos padrao', 'modelos favoritos',
+      'blocos de assinatura', 'blocos de reunião', 'blocos internos',
+      'contatos', 'acompanhamento especial', 'pontos de controle',
+      'marcadores', 'grupos', 'meus contatos', 'processos sobrestados',
+      'retorno programado', 'controle de prazos', 'controle de prazo',
+      'painel de controle', 'iniciar processo', 'novo processo',
+      'gerar documento', 'incluir documento'
+    ];
+
+    function isUIElement(texto) {
+      const lower = texto.toLowerCase().trim();
+      return uiExclusions.some(excl => lower === excl || lower.startsWith(excl));
+    }
+
+    // Tentar encontrar a árvore de documentos do processo primeiro
+    // SEI usa #divArvore, #ifrArvore ou containers com 'arvore' no ID
+    const treeContainer = doc.querySelector(
+      '#divArvore, [id*="arvore" i], [id*="Arvore"], #divDocumentos, #frmArvore'
+    );
+
+    const searchRoot = treeContainer || doc;
+
+    // Buscar links de documentos — apenas ações de VISUALIZAÇÃO
+    searchRoot.querySelectorAll('a[href*="controlador.php"]').forEach(link => {
       const href = link.getAttribute('href') || '';
 
-      // Só links que são de documentos
-      if (!href.includes('documento') && !href.includes('protocolo_visualizar') &&
-          !href.includes('editor') && !href.includes('gerar_documento')) return;
+      // Apenas links de visualização de documentos/protocolos
+      const isDocLink = href.includes('protocolo_visualizar') ||
+                        href.includes('documento_visualizar') ||
+                        href.includes('documento_consultar') ||
+                        href.includes('documento_imprimir') ||
+                        (href.includes('editor') && href.includes('id_documento'));
 
-      // Ignorar ações de criação/edição
+      if (!isDocLink) return;
+
+      // Ignorar ações de criação/edição/exclusão
       if (href.includes('documento_escolher_tipo') || href.includes('documento_gerar') ||
-          href.includes('documento_excluir') || href.includes('documento_cancelar')) return;
+          href.includes('documento_excluir') || href.includes('documento_cancelar') ||
+          href.includes('documento_criar')) return;
 
       const texto = link.textContent.trim();
       if (!texto || texto.length < 2) return;
+
+      // Filtrar elementos de UI/navegação
+      if (isUIElement(texto)) return;
 
       const params = getParamsFromUrl(href);
       const idDoc = params.id_documento || params.id_protocolo || '';
@@ -555,37 +623,42 @@
         nome: texto,
         tipo: tipoDoc || extrairTipoDocumento(texto),
         descricao: tooltip,
-        url: href, // URL completa com hash para fetch posterior
+        url: href,
         conteudo: ''
       });
     });
 
-    // Fallback: links genéricos em árvore
-    if (documentos.length === 0) {
-      doc.querySelectorAll('a').forEach(link => {
+    // Fallback: buscar em toda a página se a árvore não foi encontrada
+    // mas com filtros rigorosos para evitar UI
+    if (documentos.length === 0 && treeContainer) {
+      // Se treeContainer existia mas não achou docs, tentar doc inteiro
+      doc.querySelectorAll('a[href*="controlador.php"]').forEach(link => {
         const href = link.getAttribute('href') || '';
+        if (!href.includes('protocolo_visualizar') && !href.includes('documento_visualizar')) return;
+
         const texto = link.textContent.trim();
-        if (!texto || texto.length < 3) return;
+        if (!texto || texto.length < 2 || isUIElement(texto)) return;
 
-        // Verificar pelo onclick/onmouseover que pareça ser documento
-        const onclick = link.getAttribute('onclick') || '';
-        if (onclick.includes('documento') || onclick.includes('abrirArvore') ||
-            href.includes('documento') || href.includes('protocolo')) {
-          const params = getParamsFromUrl(href);
-          const idDoc = params.id_documento || params.id_protocolo || '';
-          const key = idDoc || texto;
-          if (seen.has(key)) return;
-          seen.add(key);
+        // Verificar se o link está dentro de menu/sidebar (ignorar)
+        const parentNav = link.closest('nav, #infraMenu, .infraBarraSistema, #divInfraSidebarMenu, [role="navigation"], #menuSistema');
+        if (parentNav) return;
 
-          documentos.push({
-            id_documento: idDoc,
-            nome: texto,
-            tipo: extrairTipoDocumento(texto),
-            descricao: '',
-            url: href,
-            conteudo: ''
-          });
-        }
+        const params = getParamsFromUrl(href);
+        const idDoc = params.id_documento || params.id_protocolo || '';
+        const key = idDoc || texto;
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        const tooltip = extractTooltipText(link.getAttribute('onmouseover') || '');
+
+        documentos.push({
+          id_documento: idDoc,
+          nome: texto,
+          tipo: extrairTipoDocumento(texto),
+          descricao: tooltip,
+          url: href,
+          conteudo: ''
+        });
       });
     }
 
@@ -598,15 +671,35 @@
     const andamentos = [];
 
     // SEI exibe andamentos em tabela (tblHistorico ou similar)
+    // A página procedimento_consultar pode ter diferentes IDs dependendo da versão
     const tabelas = doc.querySelectorAll(
       '#tblHistorico, table[id*="historico"], table[id*="Historico"], ' +
       '#tblAndamentos, table[id*="andamento"], table[id*="Andamento"], ' +
-      'table.infraTable'
+      '#tblTimeline, table[id*="timeline"], table[id*="Timeline"]'
     );
 
-    tabelas.forEach(tabela => {
+    // Se não encontrou tabela específica, procurar tabelas genéricas com dados de andamento
+    let tabelasParaBuscar = tabelas;
+    if (tabelas.length === 0) {
+      // Procurar qualquer tabela que contenha datas no formato DD/MM/YYYY
+      const allTables = doc.querySelectorAll('table.infraTable, table');
+      const tabelasComDatas = [];
+      allTables.forEach(t => {
+        // Ignorar tabelas de formulário ou menu
+        if (t.closest('form[id*="pesquis"], nav, #infraMenu, .infraBarraSistema')) return;
+        const html = t.innerHTML;
+        if (/\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/.test(html)) {
+          tabelasComDatas.push(t);
+        }
+      });
+      tabelasParaBuscar = tabelasComDatas;
+    }
+
+    tabelasParaBuscar.forEach(tabela => {
       const rows = tabela.querySelectorAll('tr');
       rows.forEach(row => {
+        // Pular headers
+        if (row.querySelector('th')) return;
         const tds = row.querySelectorAll('td');
         if (tds.length < 2) return;
 
@@ -619,14 +712,24 @@
           if (/^\d{2}\/\d{2}\/\d{4}/.test(text) && !data) {
             data = text;
           }
-          // Detectar unidade (sigla em maiúsculas com /)
+          // Detectar unidade (sigla em maiúsculas com / ou -)
           else if (/^[A-Z]{2,}[\/-]/.test(text) && !unidade) {
             unidade = text;
           }
+          // Usuário geralmente é um nome curto sem data
+          else if (text.length > 2 && text.length < 80 && !usuario && !/^\d{2}\//.test(text)) {
+            // Verificar se parece nome (contém letras e possivelmente espaços)
+            if (/^[A-Za-zÀ-ÿ\s.]+$/.test(text) && text.includes(' ')) {
+              usuario = text;
+            } else if (!descricao) {
+              descricao = text;
+            } else {
+              usuario = text;
+            }
+          }
           // Descrição é geralmente o campo mais longo
-          else if (text.length > 5) {
-            if (!descricao) descricao = text;
-            else if (!usuario && text.length < descricao.length) usuario = text;
+          else if (text.length > 5 && !descricao) {
+            descricao = text;
           }
         });
 
@@ -635,19 +738,24 @@
           const links = td.querySelectorAll('a[onmouseover]');
           links.forEach(link => {
             const tip = extractTooltipText(link.getAttribute('onmouseover') || '');
-            if (tip && tip.length > descricao.length) descricao = tip;
+            if (tip && tip.length > (descricao || '').length) descricao = tip;
           });
         });
 
         if (data || descricao) {
-          andamentos.push({ data, unidade, usuario, descricao });
+          andamentos.push({
+            data: normalizarTexto(data),
+            unidade: normalizarTexto(unidade),
+            usuario: normalizarTexto(usuario),
+            descricao: normalizarTexto(descricao)
+          });
         }
       });
     });
 
     // Se não encontrou em tabela, tentar em divs/listas
     if (andamentos.length === 0) {
-      doc.querySelectorAll('.andamento, .historico-item, [class*="andamento"]').forEach(el => {
+      doc.querySelectorAll('.andamento, .historico-item, [class*="andamento"], [class*="historico"], [class*="timeline"]').forEach(el => {
         const text = el.textContent.trim();
         const dateMatch = text.match(/(\d{2}\/\d{2}\/\d{4}[\s\d:]*)/);
         if (dateMatch) {
@@ -671,13 +779,13 @@
       '#txaDescricao, textarea[name*="descricao"], textarea[name*="anotacao"], ' +
       '#txaConteudo, textarea[id*="anotacao"]'
     );
-    if (textarea) return textarea.value || textarea.textContent || '';
+    if (textarea) return normalizarTexto(textarea.value || textarea.textContent || '');
 
     // Div de visualização
     const divAnot = doc.querySelector(
       '#divDescricao, .anotacao-conteudo, [id*="anotacao"], [class*="anotacao"]'
     );
-    if (divAnot) return divAnot.textContent.trim();
+    if (divAnot) return normalizarTexto(divAnot.textContent);
 
     return '';
   }
@@ -706,7 +814,7 @@
           }
         }
 
-        const text = td.textContent.trim();
+        const text = normalizarTexto(td.textContent);
         if (text && text.length > 1) {
           if (!nome) nome = text;
           else if (!texto) texto = text;
@@ -1119,24 +1227,14 @@
 
   function formatForBM3(processos) {
     return processos.map(p => ({
+      // Identificação do processo
       numero: p.numero,
       tipo: p.tipo_processo || p.tipo || p.especificacao || '',
       interessado: p.interessado || '',
       assunto: p.assunto || p.especificacao || '',
-      cpf_atribuido: '',
       unidade: p.unidade || '',
-      marcador: p.marcador || '',
-      prioridade: 'normal',
-      status: 'pendente',
-      prazo: null,
-      anotacoes: p.anotacao_completa || p.anotacao || '',
-      observacoes: [
-        p.observacao_processo ? `Obs: ${p.observacao_processo}` : '',
-        p.ponto_controle ? `Ponto de Controle: ${p.ponto_controle}` : '',
-        p.atribuido ? `Atribuído para: ${p.atribuido}` : '',
-        p.data_recebimento ? `Recebido em: ${p.data_recebimento}` : '',
-        p.id_procedimento ? `ID SEI: ${p.id_procedimento}` : ''
-      ].filter(Boolean).join('\n'),
+
+      // 1. Documentos internos ao processo
       documentos: (p.documentos || []).map(d => ({
         id_documento: d.id_documento || '',
         nome: d.nome || '',
@@ -1146,12 +1244,20 @@
         conteudo_completo: d.conteudo_completo !== false,
         conteudo_erro: d.conteudo_erro || null
       })),
+
+      // 2. Andamentos (histórico de movimentação)
       andamentos: (p.andamentos || []).map(a => ({
         data: a.data || '',
         unidade: a.unidade || '',
         usuario: a.usuario || '',
         descricao: a.descricao || ''
       })),
+
+      // 3. Anotações
+      anotacoes: p.anotacao_completa || p.anotacao || '',
+
+      // 4. Marcadores
+      marcador: p.marcador || '',
       marcador_detalhado: p.marcador_detalhado || null
     }));
   }
@@ -1185,7 +1291,7 @@
 
     const bm3Data = formatForBM3(selected);
     const json = JSON.stringify(bm3Data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
 
     const today = new Date().toISOString().split('T')[0];
