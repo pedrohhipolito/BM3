@@ -230,7 +230,7 @@ function renderTable() {
         const isVencido = p.prazo && p.prazo < today && !['concluido', 'arquivado'].includes(p.status);
         return `
         <tr data-id="${p.id}" class="${isVencido ? 'vencido' : ''}">
-            <td><strong>${escapeHtml(p.numero)}</strong></td>
+            <td><strong>${escapeHtml(p.numero)}</strong>${p.documentos && p.documentos.length > 0 ? ` <span class="doc-badge" title="${p.documentos.length} documento(s)">&#128196; ${p.documentos.length}</span>` : ''}</td>
             <td>${escapeHtml(p.tipo || '—')}</td>
             <td>${escapeHtml(p.interessado || '—')}</td>
             <td>${p.marcador ? `<span class="marcador-tag">${escapeHtml(p.marcador)}</span>` : '—'}</td>
@@ -322,6 +322,7 @@ function saveProcesso(e) {
         const novo = {
             id: generateId(),
             ...data,
+            documentos: [],
             historico: [],
             created_at: now(),
             updated_at: now()
@@ -355,6 +356,29 @@ function deleteProcesso(id) {
 // ============================================================
 // Detail View
 // ============================================================
+
+function renderDocumentos(p) {
+    const docs = p.documentos || [];
+    if (docs.length === 0) return '';
+
+    const docItems = docs.map(d => `
+        <div class="doc-item">
+            <span class="doc-icon">&#128196;</span>
+            <div class="doc-info">
+                <div class="doc-nome">${escapeHtml(d.nome)}</div>
+                ${d.tipo ? `<span class="doc-tipo">${escapeHtml(d.tipo)}</span>` : ''}
+                ${d.descricao ? `<div class="doc-descricao">${escapeHtml(d.descricao)}</div>` : ''}
+            </div>
+        </div>
+    `).join('');
+
+    return `
+        <div class="detail-field full-width detail-documentos">
+            <label>Documentos / Anexos (${docs.length})</label>
+            <div class="doc-list">${docItems}</div>
+        </div>
+    `;
+}
 
 function openDetail(id) {
     const p = processos.find(p => p.id === id);
@@ -421,6 +445,7 @@ function openDetail(id) {
                 <label>Atualizado em</label>
                 <div class="value">${p.updated_at ? new Date(p.updated_at).toLocaleString('pt-BR') : '—'}</div>
             </div>
+            ${renderDocumentos(p)}
         </div>
     `;
 
@@ -504,6 +529,7 @@ function importData(file) {
                         prazo: item.prazo || null,
                         anotacoes: item.anotacoes || '',
                         observacoes: item.observacoes || '',
+                        documentos: item.documentos || [],
                         historico: item.historico || [],
                         created_at: item.created_at || now(),
                         updated_at: now()
@@ -627,6 +653,7 @@ function processPastedData() {
                 prazo: item.prazo || null,
                 anotacoes: item.anotacoes || '',
                 observacoes: item.observacoes || '',
+                documentos: item.documentos || [],
                 historico: [{ data: now(), texto: 'Importado do SEI' }],
                 created_at: now(),
                 updated_at: now()
@@ -804,6 +831,7 @@ function importFromPdf() {
             prazo: item.prazo || null,
             anotacoes: item.anotacoes || '',
             observacoes: item.observacoes || '',
+            documentos: item.documentos || [],
             historico: [{ data: now(), texto: 'Importado via PDF do SEI' }],
             created_at: now(),
             updated_at: now()

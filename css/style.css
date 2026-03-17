@@ -665,6 +665,79 @@ body {
 #parse-result.success, #pdf-import-result.success { color: var(--success); font-weight: 600; }
 #parse-result.error, #pdf-import-result.error { color: var(--danger); }
 
+/* === Documentos === */
+.doc-badge {
+    display: inline-block;
+    background: var(--success-light);
+    color: var(--success);
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+.detail-documentos {
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.doc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.doc-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    border-left: 3px solid var(--success);
+}
+
+.doc-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.doc-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.doc-nome {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.doc-tipo {
+    display: inline-block;
+    background: var(--info-light);
+    color: #1a5276;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+.doc-descricao {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
 /* === Responsive === */
 @media (max-width: 768px) {
     .header { flex-direction: column; gap: 12px; }

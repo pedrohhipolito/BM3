@@ -260,6 +260,44 @@
   background: #e74c3c;
 }
 
+/* Documentos no item do processo */
+.bm3-proc-tag.docs {
+  background: #d5f5e3;
+  color: #1e8449;
+  font-weight: 600;
+}
+
+.bm3-proc-docs {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #f9f9f9;
+  border-radius: 4px;
+  border-left: 3px solid #27ae60;
+}
+
+.bm3-doc-item {
+  font-size: 11px;
+  color: #444;
+  padding: 2px 0;
+  border-bottom: 1px solid #eee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bm3-doc-item:last-child {
+  border-bottom: none;
+}
+
+.bm3-doc-item strong {
+  color: #2c3e50;
+}
+
+.bm3-doc-more {
+  color: #888;
+  font-style: italic;
+}
+
 @keyframes bm3FadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }

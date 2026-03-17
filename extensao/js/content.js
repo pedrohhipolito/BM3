@@ -145,6 +145,153 @@
   }
 
   // ============================================================
+  // Scraping: Captura documentos da página de detalhes
+  // ============================================================
+
+  function buildSEIUrl(action, params) {
+    // Construir URL do SEI baseada na URL atual
+    const base = window.location.href.split('controlador.php')[0] + 'controlador.php';
+    const queryParts = [`acao=${action}`];
+    for (const [k, v] of Object.entries(params)) {
+      queryParts.push(`${k}=${v}`);
+    }
+    return base + '?' + queryParts.join('&');
+  }
+
+  async function fetchDocumentos(idProcedimento) {
+    if (!idProcedimento) return [];
+
+    try {
+      const url = buildSEIUrl('procedimento_trabalhar', { id_procedimento: idProcedimento });
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (!resp.ok) return [];
+
+      const html = await resp.text();
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      const documentos = [];
+
+      // SEI exibe documentos na árvore (divArvore) ou em tabelas de documentos
+      // Padrão 1: Links de documentos na árvore
+      const docLinks = doc.querySelectorAll(
+        'a[href*="documento_consultar"], a[href*="protocolo_visualizar"], a[href*="documento_visualizar"]'
+      );
+
+      docLinks.forEach(link => {
+        const texto = link.textContent.trim();
+        if (!texto) return;
+
+        const href = link.getAttribute('href') || '';
+        const params = getParamsFromUrl(href);
+        const idDoc = params.id_documento || params.id_protocolo || '';
+
+        // Tooltip pode ter mais info
+        const tooltip = extractTooltipText(link.getAttribute('onmouseover') || '');
+
+        // Ícone/imagem adjacente pode indicar o tipo
+        const img = link.querySelector('img') || link.previousElementSibling;
+        let tipoDoc = '';
+        if (img && img.getAttribute) {
+          tipoDoc = img.getAttribute('title') || img.getAttribute('alt') || '';
+        }
+
+        documentos.push({
+          id_documento: idDoc,
+          nome: texto,
+          tipo: tipoDoc || extrairTipoDocumento(texto),
+          descricao: tooltip,
+          url: href
+        });
+      });
+
+      // Padrão 2: Tabela de documentos (alguns layouts SEI)
+      if (documentos.length === 0) {
+        const tabelasDocs = doc.querySelectorAll('table[id*="documento"], table[id*="Documento"]');
+        tabelasDocs.forEach(tabela => {
+          const rows = tabela.querySelectorAll('tr');
+          rows.forEach(row => {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 2) return;
+
+            const link = row.querySelector('a');
+            if (!link) return;
+
+            const nome = link.textContent.trim();
+            const href = link.getAttribute('href') || '';
+            const params = getParamsFromUrl(href);
+            const idDoc = params.id_documento || params.id_protocolo || '';
+
+            // Colunas adicionais podem ter tipo e data
+            let tipoDoc = '';
+            let dataDoc = '';
+            tds.forEach(td => {
+              const text = td.textContent.trim();
+              if (/^\d{2}\/\d{2}\/\d{4}/.test(text)) {
+                dataDoc = text;
+              } else if (text !== nome && text.length > 2 && text.length < 60) {
+                if (!tipoDoc) tipoDoc = text;
+              }
+            });
+
+            documentos.push({
+              id_documento: idDoc,
+              nome: nome,
+              tipo: tipoDoc || extrairTipoDocumento(nome),
+              descricao: dataDoc ? `Data: ${dataDoc}` : '',
+              url: href
+            });
+          });
+        });
+      }
+
+      // Padrão 3: Spans/divs com classe de documento
+      if (documentos.length === 0) {
+        const spansDocs = doc.querySelectorAll(
+          '[class*="arvore"] a, [id*="arvore"] a, [class*="tree"] a'
+        );
+        spansDocs.forEach(link => {
+          const texto = link.textContent.trim();
+          if (!texto || texto.length < 3) return;
+          const href = link.getAttribute('href') || '';
+          if (!href.includes('documento') && !href.includes('protocolo')) return;
+
+          const params = getParamsFromUrl(href);
+          documentos.push({
+            id_documento: params.id_documento || params.id_protocolo || '',
+            nome: texto,
+            tipo: extrairTipoDocumento(texto),
+            descricao: '',
+            url: href
+          });
+        });
+      }
+
+      return documentos;
+    } catch (err) {
+      console.warn('BM3: Erro ao buscar documentos do processo', idProcedimento, err);
+      return [];
+    }
+  }
+
+  function extrairTipoDocumento(nome) {
+    // Tenta identificar o tipo pelo nome do documento
+    const tipos = [
+      'Ofício', 'Memorando', 'Despacho', 'Portaria', 'Requerimento',
+      'Parecer', 'Nota Técnica', 'Relatório', 'Certidão', 'Declaração',
+      'Notificação', 'Intimação', 'Edital', 'Contrato', 'Convênio',
+      'Ata', 'Resolução', 'Instrução', 'Termo', 'Anexo', 'Informe',
+      'Comunicação', 'Circular', 'Aviso', 'Ordem de Serviço'
+    ];
+    for (const tipo of tipos) {
+      if (nome.toLowerCase().includes(tipo.toLowerCase())) {
+        return tipo;
+      }
+    }
+    return '';
+  }
+
+  // ============================================================
   // UI: Painel lateral e botão flutuante
   // ============================================================
 
@@ -173,6 +320,7 @@
       </div>
       <div class="bm3-toolbar">
         <button id="bm3-btn-capturar" class="bm3-primary">Capturar Processos</button>
+        <button id="bm3-btn-capturar-docs" class="bm3-primary" title="Captura processos e busca documentos/anexos de cada um">Capturar + Documentos</button>
         <button id="bm3-btn-select-all">Selecionar Todos</button>
         <button id="bm3-btn-copiar" class="bm3-success">Copiar para BM3</button>
         <button id="bm3-btn-exportar-json">Exportar JSON</button>
@@ -194,6 +342,7 @@
     // Event listeners
     document.getElementById('bm3-close-btn').addEventListener('click', togglePanel);
     document.getElementById('bm3-btn-capturar').addEventListener('click', capturarProcessos);
+    document.getElementById('bm3-btn-capturar-docs').addEventListener('click', capturarComDocumentos);
     document.getElementById('bm3-btn-select-all').addEventListener('click', toggleSelectAll);
     document.getElementById('bm3-btn-copiar').addEventListener('click', copiarParaBM3);
     document.getElementById('bm3-btn-exportar-json').addEventListener('click', exportarJSON);
@@ -227,6 +376,49 @@
     }
   }
 
+  async function capturarComDocumentos() {
+    capturedProcessos = scrapeProcessos();
+    const count = capturedProcessos.length;
+
+    if (count === 0) {
+      showToast('Nenhum processo encontrado na tabela.', true);
+      return;
+    }
+
+    document.getElementById('bm3-count').textContent = count;
+    document.getElementById('bm3-info').textContent =
+      `Buscando documentos de ${count} processo(s)... Aguarde.`;
+
+    const btnDocs = document.getElementById('bm3-btn-capturar-docs');
+    btnDocs.disabled = true;
+    btnDocs.textContent = 'Buscando...';
+
+    let docsTotal = 0;
+    for (let i = 0; i < capturedProcessos.length; i++) {
+      const proc = capturedProcessos[i];
+      document.getElementById('bm3-info').textContent =
+        `Buscando documentos: ${i + 1}/${count} (${proc.numero})...`;
+
+      const docs = await fetchDocumentos(proc.id_procedimento);
+      proc.documentos = docs;
+      docsTotal += docs.length;
+
+      // Pequena pausa para não sobrecarregar o servidor
+      if (i < capturedProcessos.length - 1) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+
+    btnDocs.disabled = false;
+    btnDocs.textContent = 'Capturar + Documentos';
+
+    document.getElementById('bm3-info').textContent =
+      `${count} processo(s) capturado(s) com ${docsTotal} documento(s) no total.`;
+
+    renderProcessList();
+    showToast(`${count} processo(s) com ${docsTotal} documento(s) capturado(s)!`);
+  }
+
   function renderProcessList() {
     const container = document.getElementById('bm3-process-list');
 
@@ -250,7 +442,13 @@
           ${proc.anotacao ? `<span class="bm3-proc-tag anotacao">Anot.: ${proc.anotacao}</span>` : ''}
           ${proc.ponto_controle ? `<span class="bm3-proc-tag">PC: ${proc.ponto_controle}</span>` : ''}
           ${proc.nao_lido ? `<span class="bm3-proc-tag" style="background:#e74c3c;color:#fff;">Novo</span>` : ''}
+          ${proc.documentos && proc.documentos.length > 0 ? `<span class="bm3-proc-tag docs">${proc.documentos.length} doc(s)</span>` : ''}
         </div>
+        ${proc.documentos && proc.documentos.length > 0 ? `
+        <div class="bm3-proc-docs">
+          ${proc.documentos.slice(0, 5).map(d => `<div class="bm3-doc-item">${d.tipo ? `<strong>${d.tipo}:</strong> ` : ''}${d.nome}</div>`).join('')}
+          ${proc.documentos.length > 5 ? `<div class="bm3-doc-item bm3-doc-more">... e mais ${proc.documentos.length - 5} documento(s)</div>` : ''}
+        </div>` : ''}
       </div>
     `).join('');
 
@@ -323,7 +521,13 @@
         p.atribuido ? `Atribuído para: ${p.atribuido}` : '',
         p.data_recebimento ? `Recebido em: ${p.data_recebimento}` : '',
         p.id_procedimento ? `ID SEI: ${p.id_procedimento}` : ''
-      ].filter(Boolean).join('\n')
+      ].filter(Boolean).join('\n'),
+      documentos: (p.documentos || []).map(d => ({
+        id_documento: d.id_documento || '',
+        nome: d.nome || '',
+        tipo: d.tipo || '',
+        descricao: d.descricao || ''
+      }))
     }));
   }
 
