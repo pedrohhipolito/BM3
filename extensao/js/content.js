@@ -178,7 +178,11 @@
       documentos: [],
       andamentos: [],
       anotacao_completa: '',
-      marcador_detalhado: null
+      marcador_detalhado: null,
+      interessado: '',
+      assunto: '',
+      tipo_processo: '',
+      observacao_processo: ''
     };
 
     // Buscar página principal do processo (árvore de documentos)
@@ -187,11 +191,14 @@
       resultado.documentos = extrairDocumentos(docPage);
     }
 
-    // Buscar andamentos/histórico
+    // Buscar andamentos/histórico E dados cadastrais do processo
     await sleep(200);
     const andPage = await fetchSEIPage('procedimento_consultar', { id_procedimento: idProcedimento });
     if (andPage) {
       resultado.andamentos = extrairAndamentos(andPage);
+      // Extrair dados cadastrais (interessado, assunto, tipo)
+      const dadosCadastrais = extrairDadosCadastrais(andPage);
+      Object.assign(resultado, dadosCadastrais);
     }
 
     // Buscar anotações completas
@@ -209,6 +216,95 @@
     }
 
     return resultado;
+  }
+
+  // --- Dados cadastrais do processo (interessado, assunto, tipo) ---
+  function extrairDadosCadastrais(doc) {
+    const dados = {
+      interessado: '',
+      assunto: '',
+      tipo_processo: '',
+      observacao_processo: ''
+    };
+
+    // Estratégia 1: Labels + valores em tabelas/divs do SEI
+    // O SEI exibe dados como: <label>Interessado(s):</label> <span>Valor</span>
+    // ou em tabelas com <td class="infraLabelCampo">Interessado(s):</td><td>Valor</td>
+    const labelMappings = [
+      { field: 'interessado',    patterns: ['interessado', 'interessados'] },
+      { field: 'assunto',        patterns: ['assunto', 'especificação', 'especificacao', 'descrição'] },
+      { field: 'tipo_processo',  patterns: ['tipo do processo', 'tipo'] },
+      { field: 'observacao_processo', patterns: ['observação', 'observacao', 'obs'] }
+    ];
+
+    // Buscar em TDs com classe de label do SEI
+    const labelTds = doc.querySelectorAll('td.infraLabelCampo, th.infraLabelCampo, label');
+    labelTds.forEach(labelEl => {
+      const labelText = labelEl.textContent.trim().toLowerCase().replace(/:$/, '');
+
+      for (const mapping of labelMappings) {
+        if (dados[mapping.field]) continue; // já encontrado
+        const matched = mapping.patterns.some(p => labelText.includes(p));
+        if (!matched) continue;
+
+        // Valor pode estar no próximo sibling (td) ou em span/div adjacente
+        let valorEl = labelEl.nextElementSibling;
+        if (!valorEl && labelEl.parentElement) {
+          // Caso <td><label>X:</label></td><td>valor</td>
+          valorEl = labelEl.parentElement.nextElementSibling;
+        }
+        if (valorEl) {
+          const valor = valorEl.textContent.trim();
+          if (valor && valor.length > 0 && valor.length < 2000) {
+            dados[mapping.field] = valor;
+          }
+        }
+      }
+    });
+
+    // Estratégia 2: Buscar em spans/divs com IDs típicos do SEI
+    const idMappings = [
+      { field: 'interessado',   ids: ['txtInteressados', 'divInteressados', 'lblInteressados'] },
+      { field: 'assunto',       ids: ['txtAssunto', 'divAssunto', 'lblAssunto', 'txtEspecificacao'] },
+      { field: 'tipo_processo', ids: ['txtTipoProcedimento', 'divTipoProcedimento', 'lblTipoProcedimento'] },
+      { field: 'observacao_processo', ids: ['txtObservacao', 'divObservacao'] }
+    ];
+
+    for (const mapping of idMappings) {
+      if (dados[mapping.field]) continue;
+      for (const id of mapping.ids) {
+        const el = doc.getElementById(id);
+        if (el) {
+          const valor = el.textContent.trim();
+          if (valor && valor.length > 0) {
+            dados[mapping.field] = valor;
+            break;
+          }
+        }
+      }
+    }
+
+    // Estratégia 3: Buscar por texto genérico no corpo da página
+    // Alguns SEIs mostram "Interessado(s): Nome" diretamente no HTML
+    if (!dados.interessado || !dados.assunto) {
+      const allText = doc.body ? doc.body.innerHTML : '';
+
+      if (!dados.interessado) {
+        const matchInt = allText.match(/Interessado\(?s?\)?:\s*<[^>]*>([^<]+)/i);
+        if (matchInt) dados.interessado = matchInt[1].trim();
+      }
+      if (!dados.assunto) {
+        const matchAss = allText.match(/Especifica[çc][ãa]o:\s*<[^>]*>([^<]+)/i);
+        if (!matchAss) {
+          const matchAss2 = allText.match(/Assunto:\s*<[^>]*>([^<]+)/i);
+          if (matchAss2) dados.assunto = matchAss2[1].trim();
+        } else {
+          dados.assunto = matchAss[1].trim();
+        }
+      }
+    }
+
+    return dados;
   }
 
   function sleep(ms) {
@@ -598,6 +694,10 @@
       proc.andamentos = dados.andamentos || [];
       proc.anotacao_completa = dados.anotacao_completa || proc.anotacao || '';
       proc.marcador_detalhado = dados.marcador_detalhado || null;
+      proc.interessado = dados.interessado || '';
+      proc.assunto = dados.assunto || '';
+      proc.tipo_processo = dados.tipo_processo || '';
+      proc.observacao_processo = dados.observacao_processo || '';
 
       docsTotal += proc.documentos.length;
       andTotal += proc.andamentos.length;
@@ -756,9 +856,9 @@
   function formatForBM3(processos) {
     return processos.map(p => ({
       numero: p.numero,
-      tipo: p.tipo || p.especificacao || '',
-      interessado: '',
-      assunto: p.especificacao || '',
+      tipo: p.tipo_processo || p.tipo || p.especificacao || '',
+      interessado: p.interessado || '',
+      assunto: p.assunto || p.especificacao || '',
       cpf_atribuido: '',
       unidade: p.unidade || '',
       marcador: p.marcador || '',
@@ -767,6 +867,7 @@
       prazo: null,
       anotacoes: p.anotacao_completa || p.anotacao || '',
       observacoes: [
+        p.observacao_processo ? `Obs: ${p.observacao_processo}` : '',
         p.ponto_controle ? `Ponto de Controle: ${p.ponto_controle}` : '',
         p.atribuido ? `Atribuído para: ${p.atribuido}` : '',
         p.data_recebimento ? `Recebido em: ${p.data_recebimento}` : '',
