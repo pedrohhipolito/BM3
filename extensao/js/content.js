@@ -26,6 +26,74 @@
   }
 
   // ============================================================
+  // Validação de CPF — Algoritmo oficial (Receita Federal do Brasil)
+  // Referência: Instrução Normativa RFB nº 1.548/2015
+  // Os dois últimos dígitos do CPF são dígitos verificadores calculados
+  // a partir dos 9 primeiros usando pesos específicos (módulo 11).
+  // ============================================================
+
+  function validarCPF(cpf) {
+    if (!cpf) return false;
+
+    // Remover caracteres não numéricos
+    const nums = cpf.replace(/\D/g, '');
+
+    // CPF deve ter exatamente 11 dígitos
+    if (nums.length !== 11) return false;
+
+    // Rejeitar CPFs com todos os dígitos iguais (ex: 111.111.111-11)
+    if (/^(\d)\1{10}$/.test(nums)) return false;
+
+    // Cálculo do primeiro dígito verificador (10º dígito)
+    // Pesos: 10, 9, 8, 7, 6, 5, 4, 3, 2 aplicados aos 9 primeiros dígitos
+    let soma = 0;
+    for (let i = 0; i < 9; i++) {
+      soma += parseInt(nums[i]) * (10 - i);
+    }
+    let resto = (soma * 10) % 11;
+    if (resto === 10) resto = 0;
+    if (resto !== parseInt(nums[9])) return false;
+
+    // Cálculo do segundo dígito verificador (11º dígito)
+    // Pesos: 11, 10, 9, 8, 7, 6, 5, 4, 3, 2 aplicados aos 10 primeiros dígitos
+    soma = 0;
+    for (let i = 0; i < 10; i++) {
+      soma += parseInt(nums[i]) * (11 - i);
+    }
+    resto = (soma * 10) % 11;
+    if (resto === 10) resto = 0;
+    if (resto !== parseInt(nums[10])) return false;
+
+    return true;
+  }
+
+  // Formatar CPF no padrão XXX.XXX.XXX-XX
+  function formatarCPF(cpf) {
+    const nums = (cpf || '').replace(/\D/g, '');
+    if (nums.length !== 11) return cpf || '';
+    return `${nums.slice(0, 3)}.${nums.slice(3, 6)}.${nums.slice(6, 9)}-${nums.slice(9)}`;
+  }
+
+  // Extrair CPF de um texto (busca padrão XXX.XXX.XXX-XX ou 11 dígitos consecutivos)
+  function extrairCPF(texto) {
+    if (!texto) return '';
+
+    // Padrão formatado: XXX.XXX.XXX-XX
+    const matchFormatado = texto.match(/\d{3}\.\d{3}\.\d{3}-\d{2}/);
+    if (matchFormatado && validarCPF(matchFormatado[0])) {
+      return matchFormatado[0];
+    }
+
+    // Padrão numérico: 11 dígitos consecutivos
+    const matchNumerico = texto.match(/\b\d{11}\b/);
+    if (matchNumerico && validarCPF(matchNumerico[0])) {
+      return formatarCPF(matchNumerico[0]);
+    }
+
+    return '';
+  }
+
+  // ============================================================
   // Scraping: Extrai processos da tabela do SEI
   // ============================================================
 
@@ -1226,13 +1294,19 @@
   }
 
   function formatForBM3(processos) {
-    return processos.map(p => ({
+    return processos.map(p => {
+      // Tentar extrair CPF do campo de atribuição ou interessado
+      const cpfAtribuido = extrairCPF(p.atribuido) || extrairCPF(p.interessado) || '';
+
+      return {
       // Identificação do processo
       numero: p.numero,
       tipo: p.tipo_processo || p.tipo || p.especificacao || '',
       interessado: p.interessado || '',
       assunto: p.assunto || p.especificacao || '',
       unidade: p.unidade || '',
+      cpf_atribuido: cpfAtribuido,
+      cpf_valido: cpfAtribuido ? validarCPF(cpfAtribuido) : null,
 
       // 1. Documentos internos ao processo
       documentos: (p.documentos || []).map(d => ({
@@ -1259,7 +1333,8 @@
       // 4. Marcadores
       marcador: p.marcador || '',
       marcador_detalhado: p.marcador_detalhado || null
-    }));
+    };
+    });
   }
 
   function copiarParaBM3() {
